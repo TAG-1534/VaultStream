@@ -2,14 +2,19 @@ import os
 import requests
 import random
 import sqlite3
-from flask import Flask, render_template_string, send_from_directory, request, jsonify
+import re
+from flask import Flask, render_template_string, send_from_directory, request, jsonify, redirect, url_for
 
 app = Flask(__name__)
 
 # --- CONFIGURATION ---
+# Use the same TMDB Token you've been using
 TMDB_API_KEY = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJiMTE3OWQ4YTVlZGM4NWI4ZGE5M2E1MTBkOTI2NTc5OCIsIm5iZiI6MTc2OTc1MjI0OC40MjgsInN1YiI6IjY5N2M0NmI4ZWFlYzRiMGRhZmY5NWQ3YSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.eGjm5dKGiOOAVXA4MK80q4z0Bb8Dyo0ZW-w-q6F_erQ" 
 DB_PATH = '/config/vaultstream.db'
 PATHS = {'movies': '/movies', 'tv': '/tv'}
+
+# Global cache to speed up the UI
+media_cache = {'movies': [], 'tv': []}
 
 def init_db():
     if not os.path.exists('/config'): os.makedirs('/config')
@@ -17,48 +22,75 @@ def init_db():
         conn.execute('CREATE TABLE IF NOT EXISTS progress (filename TEXT PRIMARY KEY, seconds REAL)')
 init_db()
 
-# --- MODERN CINEMATIC UI ---
+def clean_filename(name):
+    name = re.sub(r'\(.*?\)|\[.*?\]', '', name)
+    junk = ['1080p', '720p', '4k', 'bluray', 'x264', 'x265', 'h264', 'webrip', 'dvdrip', 'multi']
+    for word in junk:
+        name = re.sub(f'(?i){word}', '', name)
+    return name.replace('.', ' ').replace('_', ' ').strip()
+
+def fetch_metadata(name):
+    clean_name = clean_filename(name)
+    url = f"https://api.themoviedb.org/3/search/multi?query={clean_name}"
+    headers = {"Authorization": f"Bearer {TMDB_API_KEY}", "accept": "application/json"}
+    
+    try:
+        r = requests.get(url, headers=headers, timeout=5).json()
+        if r.get('results'):
+            res = r['results'][0]
+            return {
+                'title': res.get('title') or res.get('name') or name,
+                'poster': f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}" if res.get('poster_path') else "https://via.placeholder.com/500x750?text=No+Poster",
+                'backdrop': f"https://image.tmdb.org/t/p/original{res.get('backdrop_path')}" if res.get('backdrop_path') else "",
+                'desc': res.get('overview', 'No description available.')
+            }
+    except Exception: pass
+    return {'title': name, 'poster': "https://via.placeholder.com/500x750?text=No+Metadata", 'backdrop': '', 'desc': ''}
+
+def scan_files(path):
+    results = []
+    if not os.path.exists(path): return []
+    for root, _, files in os.walk(path):
+        for f in files:
+            if f.lower().endswith(('.mp4', '.mkv', '.webm', '.avi')):
+                rel = os.path.relpath(os.path.join(root, f), path)
+                results.append({'name': os.path.splitext(f)[0], 'path': rel})
+    return results
+
+# --- REFRESH LOGIC ---
+@app.route('/rescan')
+def rescan():
+    # This clears the internal cache and redirects back home
+    global media_cache
+    media_cache['movies'] = scan_files(PATHS['movies'])
+    media_cache['tv'] = scan_files(PATHS['tv'])
+    return redirect(url_for('home'))
+
 BASE_HTML = """
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VaultStream</title>
     <style>
-        :root { --primary: #e50914; --bg: #080808; --card-bg: #141414; --text: #ffffff; --nav-bg: rgba(8, 8, 8, 0.9); }
-        body { background: var(--bg); color: var(--text); font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; margin: 0; padding: 0; overflow-x: hidden; }
+        :root { --primary: #e50914; --bg: #080808; --text: #fff; }
+        body { background: var(--bg); color: var(--text); font-family: 'Helvetica Neue', Arial; margin: 0; }
+        nav { background: rgba(0,0,0,0.9); height: 70px; display: flex; align-items: center; padding: 0 4%; position: fixed; width: 100%; z-index: 1000; box-sizing: border-box; }
+        .logo { color: var(--primary); font-size: 1.8rem; font-weight: bold; text-decoration: none; margin-right: 40px; }
+        .nav-links { display: flex; align-items: center; flex-grow: 1; }
+        .nav-links a { color: #e5e5e5; text-decoration: none; margin-right: 25px; font-size: 1rem; transition: 0.3s; }
+        .nav-links a:hover { color: var(--primary); }
+        .rescan-btn { margin-left: auto; background: #333; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; text-decoration: none; font-size: 0.8rem; }
+        .rescan-btn:hover { background: #555; }
         
-        /* Navigation */
-        nav { background: var(--nav-bg); height: 70px; display: flex; align-items: center; padding: 0 4%; position: fixed; width: 100%; z-index: 1000; transition: background 0.3s; box-sizing: border-box;}
-        .logo { color: var(--primary); font-size: 1.8rem; font-weight: bold; text-decoration: none; margin-right: 40px; letter-spacing: 1px; }
-        .nav-links { display: flex; gap: 20px; flex-grow: 1; }
-        .nav-links a { color: #e5e5e5; text-decoration: none; font-size: 0.9rem; transition: color 0.3s; }
-        .nav-links a:hover { color: #b3b3b3; }
+        .hero { height: 80vh; background-size: cover; background-position: center; display: flex; align-items: center; position: relative; padding: 0 4%; }
+        .hero-overlay { position: absolute; top:0; left:0; width:100%; height:100%; background: linear-gradient(to top, var(--bg), transparent); }
+        .hero-content { position: relative; z-index: 2; max-width: 700px; }
         
-        .search-container { display: flex; align-items: center; background: rgba(255,255,255,0.1); border: 1px solid #333; padding: 5px 15px; border-radius: 20px; }
-        .search-container input { background: transparent; border: none; color: white; outline: none; padding: 5px; width: 150px; }
-
-        /* Hero Banner */
-        .hero { height: 85vh; background-size: cover; background-position: center top; display: flex; align-items: center; position: relative; padding: 0 4%; }
-        .hero-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(to right, var(--bg) 10%, transparent 60%), linear-gradient(to top, var(--bg) 5%, transparent 40%); }
-        .hero-content { position: relative; z-index: 2; max-width: 650px; }
-        .hero-title { font-size: 4.5rem; margin: 0; font-weight: bold; line-height: 1.1; }
-        .hero-desc { font-size: 1.2rem; margin: 25px 0; color: #d2d2d2; line-height: 1.5; text-shadow: 1px 1px 2px black; }
-        .btn-play { background: white; color: black; padding: 12px 35px; border-radius: 4px; font-weight: bold; text-decoration: none; font-size: 1.1rem; display: inline-flex; align-items: center; gap: 10px; }
-        .btn-play:hover { background: rgba(255,255,255,0.75); }
-
-        /* Rows & Grids */
-        .row { padding: 40px 4% 0 4%; }
-        .row-title { font-size: 1.4rem; font-weight: bold; margin-bottom: 20px; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 15px; }
-        .card { position: relative; aspect-ratio: 2/3; border-radius: 4px; overflow: hidden; transition: transform 0.4s ease; cursor: pointer; background: #222; }
-        .card:hover { transform: scale(1.08); z-index: 10; box-shadow: 0 10px 20px rgba(0,0,0,0.5); }
-        .card img { width: 100%; height: 100%; object-fit: cover; }
-        
-        /* Video Player Wrapper */
-        .player-container { padding-top: 80px; width: 90%; margin: 0 auto; text-align: center; }
-        video { width: 100%; border-radius: 8px; box-shadow: 0 0 50px rgba(0,0,0,0.8); background: black; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; padding: 40px 4%; }
+        .card { border-radius: 4px; overflow: hidden; transition: 0.3s; cursor: pointer; text-decoration: none; color: inherit; background: #141414; }
+        .card:hover { transform: scale(1.05); }
+        .card img { width: 100%; aspect-ratio: 2/3; object-fit: cover; }
+        .info { padding: 10px; font-size: 0.9rem; text-align: center; }
     </style>
 </head>
 <body>
@@ -67,81 +99,43 @@ BASE_HTML = """
         <div class="nav-links">
             <a href="/category/movies">Movies</a>
             <a href="/category/tv">TV Shows</a>
+            <a href="/rescan" class="rescan-btn">🔄 Re-scan Folders</a>
         </div>
-        <form action="/" method="GET" class="search-container">
-            <input type="text" name="search" placeholder="Titles, genres...">
-        </form>
     </nav>
     {{ body_content | safe }}
 </body>
 </html>
 """
 
-def fetch_metadata(name):
-    url = f"https://api.themoviedb.org/3/search/multi?query={name}"
-    headers = {"Authorization": f"Bearer {TMDB_API_KEY}", "accept": "application/json"}
-    try:
-        r = requests.get(url, headers=headers).json()
-        if r.get('results'):
-            res = r['results'][0]
-            return {
-                'title': res.get('title') or res.get('name'),
-                'poster': f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}" if res.get('poster_path') else "",
-                'backdrop': f"https://image.tmdb.org/t/p/original{res.get('backdrop_path')}" if res.get('backdrop_path') else "",
-                'desc': res.get('overview', 'Explore this title in your private vault.')
-            }
-    except Exception as e: print(f"Meta Error: {e}")
-    return {'title': name, 'poster': '', 'backdrop': '', 'desc': 'No description available.'}
-
-def scan_files(path):
-    results = []
-    if not os.path.exists(path): return []
-    for root, _, files in os.walk(path):
-        for f in files:
-            if f.endswith(('.mp4', '.mkv', '.webm')):
-                rel = os.path.relpath(os.path.join(root, f), path)
-                results.append({'name': os.path.splitext(f)[0], 'path': rel})
-    return results
-
 @app.route('/')
 @app.route('/category/<cat>')
 def home(cat='movies'):
-    search_query = request.args.get('search', '').lower()
+    # Check if we need to scan for the first time
+    if not media_cache[cat if cat in media_cache else 'movies']:
+        media_cache['movies'] = scan_files(PATHS['movies'])
+        media_cache['tv'] = scan_files(PATHS['tv'])
     
-    # Define which folder to scan
-    scan_path = PATHS.get(cat, PATHS['movies'])
-    all_media = scan_files(scan_path)
-    
-    if search_query:
-        all_media = [m for m in all_media if search_query in m['name'].lower()]
-
-    # Pick Hero Movie (Random from filtered list)
-    featured = random.choice(all_media) if all_media else None
+    current_list = media_cache.get(cat, media_cache['movies'])
+    featured = random.choice(current_list) if current_list else None
     meta = fetch_metadata(featured['name']) if featured else {}
     
     hero_html = ""
-    if featured and not search_query:
+    if featured:
         hero_html = f"""
         <div class="hero" style="background-image: url('{meta.get('backdrop')}');">
             <div class="hero-overlay"></div>
             <div class="hero-content">
-                <h1 class="hero-title">{meta.get('title')}</h1>
-                <p class="hero-desc">{meta.get('desc')}</p>
-                <a href="/play/{cat}/{featured['path']}" class="btn-play"><span>▶</span> Play Now</a>
+                <h1 style="font-size: 4rem; margin:0;">{meta.get('title')}</h1>
+                <p style="font-size: 1.2rem; margin: 20px 0;">{meta.get('desc')}</p>
+                <a href="/play/{cat}/{featured['path']}" style="background:white; color:black; padding:12px 30px; border-radius:4px; font-weight:bold; text-decoration:none;">▶ Play</a>
             </div>
-        </div>
-        """
+        </div>"""
     
-    # Build Grid
-    grid_title = "Browse All" if not search_query else f"Results for '{search_query}'"
-    grid_html = f'<div class="row"><div class="row-title">{grid_title}</div><div class="grid">'
-    for m in all_media:
+    grid_html = '<div class="grid">'
+    for m in current_list:
         m_meta = fetch_metadata(m['name'])
-        grid_html += f"""
-        <a href="/play/{cat}/{m['path']}" class="card">
-            <img src="{m_meta['poster']}" alt="{m['name']}">
-        </a>"""
-    grid_html += '</div></div>'
+        grid_html += f'<a href="/play/{cat}/{m["path"]}" class="card"><img src="{m_meta["poster"]}"><div class="info">{m_meta["title"]}</div></a>'
+    grid_html += '</div>'
 
     return render_template_string(BASE_HTML, body_content=hero_html + grid_html)
 
@@ -153,11 +147,9 @@ def play(cat, filename):
         if row: saved_time = row[0]
 
     content = f"""
-    <div class="player-container">
-        <video id="v" controls autoplay>
-            <source src="/stream/{cat}/{filename}">
-        </video>
-        <h2 style="margin-top:20px;">{os.path.basename(filename)}</h2>
+    <div style="padding-top: 100px; width: 80%; margin: 0 auto;">
+        <video id="v" style="width:100%;" controls autoplay><source src="/stream/{cat}/{filename}"></video>
+        <h2>{os.path.basename(filename)}</h2>
     </div>
     <script>
         const v = document.getElementById('v');
@@ -171,8 +163,7 @@ def play(cat, filename):
                 }});
             }}
         }}, 5000);
-    </script>
-    """
+    </script>"""
     return render_template_string(BASE_HTML, body_content=content)
 
 @app.route('/save_progress', methods=['POST'])
