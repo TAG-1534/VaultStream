@@ -32,10 +32,31 @@ init_db()
 
 # --- HELPERS ---
 def clean_filename(name):
+    # 1. Lowercase and remove brackets/parens content
     name = re.sub(r'\(.*?\)|\[.*?\]', '', name.lower())
-    junk = ['1080p', '720p', '4k', '2160p', 'bluray', 'x264', 'x265', 'h264', 'webrip', 'dvdrip']
-    for word in junk: name = re.sub(fr'\b{word}\b', '', name)
-    return re.sub(r'[\._-]', ' ', name).strip().title()
+    
+    # 2. Aggressive list of junk keywords to delete entirely
+    junk = [
+        r'1080p', r'720p', r'4k', r'2160p', r'bluray', r'bdrip', r'brrip', 
+        r'x264', r'x265', r'h264', r'hevc', r'webrip', r'web-rip', r'dvdrip', 
+        r'aac', r'dts', r'dd5\.1', r'ac3', r'multi', r'dual-audio', 
+        r'yts', r'yify', r'rarbg', r'psa', r'get-rarbg', r'galaxyrg'
+    ]
+    
+    for word in junk:
+        name = re.sub(fr'\b{word}\b', '', name)
+
+    # 3. Replace all dots, underscores, and dashes with spaces
+    name = re.sub(r'[\._-]', ' ', name)
+
+    # 4. Remove any years at the end (e.g., "2023") to help search broaden
+    name = re.sub(r'\b(19|20)\d{2}\b', '', name)
+
+    # 5. Final cleanup of extra whitespace
+    return re.sub(r'\s+', ' ', name).strip().title()
+
+# Inside sync_worker(), update the search URL to include more parameters:
+# search_url = f"https://api.themoviedb.org/3/search/multi?query={clean_name}&include_adult=false&language=en-US"
 
 def extract_tv_info(filename):
     match = re.search(r'[sS](\d+)[eE](\d+)|(\d+)x(\d+)', filename)
@@ -222,3 +243,4 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
