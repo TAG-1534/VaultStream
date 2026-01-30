@@ -187,7 +187,7 @@ BASE_HTML = """
 def home(cat='movies'):
     conn = get_db()
     if cat == 'tv':
-        # Get unique shows only
+        # This SQL logic creates one single entry per Series
         rows = conn.execute('''
             SELECT DISTINCT 
                 CASE 
@@ -206,7 +206,7 @@ def home(cat='movies'):
     grid_html = '<div class="grid">'
     for r in rows:
         if cat == 'tv':
-            # CLICKING A SHOW TAKES YOU TO THE SEASON FOLDERS
+            # CLICKING THE SHOW SENDS YOU TO THE SEASONS PAGE
             grid_html += f'''
             <a href="/series/{r[0]}" class="card">
                 <img src="{r[1]}" onerror="this.src='https://via.placeholder.com/500x750?text={r[0]}'">
@@ -223,11 +223,11 @@ def home(cat='movies'):
 @app.route('/series/<path:series_name>')
 def series_view(series_name):
     conn = get_db()
-    # Find all episodes to determine what seasons exist
+    # Find all episodes to find out what seasons we have
     eps = conn.execute('SELECT title FROM metadata WHERE title LIKE ? AND category = "tv"', (f"{series_name}%",)).fetchall()
     conn.close()
     
-    # Extract unique season numbers
+    # Logic to extract unique season numbers from the episode titles
     seasons = set()
     for e in eps:
         match = re.search(r'[sS](\d+)', e[0])
@@ -237,12 +237,12 @@ def series_view(series_name):
     html += '<div class="grid">'
     for s in sorted(list(seasons)):
         label = "Specials" if s == "00" else f"Season {s}"
-        # CLICKING A SEASON TAKES YOU TO THE EPISODE LIST
+        # CLICKING A SEASON FOLDER SENDS YOU TO THE EPISODE GRID
         html += f'''
         <a href="/series/{series_name}/season/{s}" class="card">
-            <div style="aspect-ratio:2/3; background:#222; display:flex; align-items:center; justify-content:center; flex-direction:column;">
-                <span style="font-size:3rem;">📂</span>
-                <span style="margin-top:10px; font-weight:bold;">{label}</span>
+            <div style="aspect-ratio:2/3; background:#1a1a1a; display:flex; flex-direction:column; align-items:center; justify-content:center; border: 1px solid #333;">
+                <span style="font-size:4rem;">📂</span>
+                <span style="margin-top:15px; font-weight:bold; color:var(--primary);">{label}</span>
             </div>
         </a>'''
     return render_template_string(BASE_HTML, body_content=html + '</div>')
@@ -250,9 +250,13 @@ def series_view(series_name):
 @app.route('/series/<path:series_name>/season/<s_num>')
 def season_view(series_name, s_num):
     conn = get_db()
-    # Only get episodes for THIS specific season
+    # Pattern to find only episodes for the specific show and specific season
     season_pattern = f"% - S{s_num}E%"
-    eps = conn.execute('SELECT filename, path, title, poster, desc FROM metadata WHERE title LIKE ? AND title LIKE ? AND category = "tv"', (f"{series_name}%", season_pattern)).fetchall()
+    eps = conn.execute('''
+        SELECT filename, path, title, poster, desc 
+        FROM metadata 
+        WHERE title LIKE ? AND title LIKE ? AND category = "tv"
+    ''', (f"{series_name}%", season_pattern)).fetchall()
     conn.close()
     
     html = f'<a href="/series/{series_name}" class="back-btn">← Back to Seasons</a><h1>{series_name} - Season {s_num}</h1>'
@@ -267,7 +271,6 @@ def season_view(series_name, s_num):
             </div>
         </a>'''
     return render_template_string(BASE_HTML, body_content=html + '</div>')
-
 @app.route('/sync')
 def sync():
     if not sync_status["active"]:
@@ -321,4 +324,5 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
 
