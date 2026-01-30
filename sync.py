@@ -36,9 +36,9 @@ def sync_worker(status_dict):
             s_num = int(s_match.group(1)) if s_match else 1
             if "special" in path_parts[1].lower(): s_num = 0
 
-        # FALLBACK: Start with a cleaned name
-        series_title = series_folder
+        # Renaming fallback
         display_title = clean_filename(fname_no_ext)
+        series_title = series_folder
         main_poster = f"https://via.placeholder.com/500x750?text={series_title}"
         season_poster = main_poster
         desc = ""
@@ -54,22 +54,19 @@ def sync_worker(status_dict):
                 main_poster = f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}"
                 
                 if cat == "tv":
-                    # Fetch Season-specific Poster
+                    # Get Season Poster
                     s_r = requests.get(f"https://api.themoviedb.org/3/tv/{tid}/season/{s_num}", headers=headers).json()
                     if s_r.get('poster_path'):
                         season_poster = f"https://image.tmdb.org/t/p/w500{s_r.get('poster_path')}"
 
-                    # Fetch Episode Detail & Official Rename
+                    # Get Episode Detail & Final Renaming
                     s_idx, e_idx = extract_tv_info(f)
                     if s_idx is not None:
                         ep_r = requests.get(f"https://api.themoviedb.org/3/tv/{tid}/season/{s_idx}/episode/{e_idx}", headers=headers).json()
                         if 'id' in ep_r:
                             display_title = f"{series_title} - S{s_idx:02d}E{e_idx:02d} - {ep_r.get('name')}"
                             desc = ep_r.get('overview')
-                            if ep_r.get('still_path'):
-                                main_poster = f"https://image.tmdb.org/t/p/w500{ep_r.get('still_path')}"
-                            else:
-                                main_poster = season_poster
+                            main_poster = f"https://image.tmdb.org/t/p/w500{ep_r.get('still_path')}" if ep_r.get('still_path') else season_poster
                         else:
                             display_title = f"{series_title} - S{s_idx:02d}E{e_idx:02d}"
                             main_poster = season_poster
