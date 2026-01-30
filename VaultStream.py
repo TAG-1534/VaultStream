@@ -77,32 +77,56 @@ def sync_worker():
     
     sync_status["total"] = len(all_files)
     headers = {"Authorization": f"Bearer {TMDB_API_KEY}", "accept": "application/json"}
-
     conn = get_db()
+
     for cat, base_path, root, f in all_files:
         fname_no_ext = os.path.splitext(f)[0]
         rel_path = os.path.relpath(os.path.join(root, f), base_path)
         
-        # Check if exists
+        # Check if already exists in DB
         exists = conn.execute('SELECT 1 FROM metadata WHERE filename = ?', (fname_no_ext,)).fetchone()
+        
         if not exists:
             clean_name = clean_filename(fname_no_ext)
             season, episode = extract_tv_info(f)
+            
+            # --- DEFAULT FALLBACK DATA (If TMDB fails) ---
+            t = clean_name
+            p = "https://via.placeholder.com/500x750?text=" + clean_name.replace(" ", "+")
+            b = ""
+            d = "No description found. Filename: " + f
+
             try:
-                r = requests.get(f"https://api.themoviedb.org/3/search/multi?query={clean_name}", headers=headers, timeout=5).json()
+                # Attempt TMDB Search
+                r = requests.get(f"https://api.themoviedb.org/3/search/multi?query={clean_name}&include_adult=false", headers=headers, timeout=5).json()
+                
                 if r.get('results'):
                     res = r['results'][0]
-                    t, p, b, d = (res.get('title') or res.get('name')), f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}", f"https://image.tmdb.org/t/p/original{res.get('backdrop_path')}", res.get('overview', '')
+                    tmdb_id = res['id']
                     
+                    # Update with real TMDB data
+                    t = res.get('title') or res.get('name') or clean_name
+                    if res.get('poster_path'):
+                        p = f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}"
+                    if res.get('backdrop_path'):
+                        b = f"https://image.tmdb.org/t/p/original{res.get('backdrop_path')}"
+                    d = res.get('overview', '')
+
+                    # TV Episode Specific logic
                     if res.get('media_type') == 'tv' and season:
-                        ep_r = requests.get(f"https://api.themoviedb.org/3/tv/{res['id']}/season/{season}/episode/{episode}", headers=headers, timeout=5).json()
+                        ep_r = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season}/episode/{episode}", headers=headers, timeout=5).json()
                         if 'id' in ep_r:
                             t = f"{t} - S{season:02d}E{episode:02d}"
-                            if ep_r.get('still_path'): p = f"https://image.tmdb.org/t/p/w500{ep_r.get('still_path')}"
-                    
-                    conn.execute('INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?)', (fname_no_ext, cat, rel_path, t, p, b, d))
-                    conn.commit()
-            except: pass
+                            if ep_r.get('still_path'):
+                                p = f"https://image.tmdb.org/t/p/w500{ep_r.get('still_path')}"
+
+            except Exception as e:
+                print(f"TMDB lookup failed for {f}: {e}")
+
+            # --- ALWAYS SAVE (Even if search failed) ---
+            conn.execute('INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?)', 
+                         (fname_no_ext, cat, rel_path, t, p, b, d))
+            conn.commit()
         
         sync_status["current"] += 1
     
@@ -243,4 +267,5 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
 
