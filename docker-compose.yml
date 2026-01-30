@@ -9,5 +9,4 @@ services:
       - /home/retfirds/vaultstream_config:/config
       - /mnt/prox-share/ProxMox/PlexJF/Movies:/movies
       - /mnt/prox-share/ProxMox/PlexJF/TV:/tv
-      - /mnt/prox-share/ProxMox/PlexJF/Music:/music
     restart: unless-stopped
