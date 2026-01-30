@@ -29,10 +29,10 @@ init_db()
 
 # --- HELPERS ---
 def clean_filename(name):
-    # 1. Remove content inside brackets/parens (e.g., [Group-Name])
-    name = re.sub(r'\(.*?\)|\[.*?\]', '', name.lower())
+    name = name.lower()
+    # 1. Remove content inside brackets/parens
+    name = re.sub(r'\(.*?\)|\[.*?\]', '', name)
     
-    # 2. Your expanded junk list
     junk = [
         r'1080p', r'720p', r'4k', r'2160p', r'bluray', r'bdrip', r'brrip', r'dvdrip', r'webrip', r'web-rip', r'hdtv', r'remux', r'sd', r'hd', r'480p', r'576p', r'web-dl', r'webdl', r'pdtv',
         r'x264', r'x265', r'h264', r'h265', r'hevc', r'10bit', r'avc', r'vc1', r'xvid', r'divx',
@@ -42,20 +42,19 @@ def clean_filename(name):
         r'repack', r'proper', r'extended', r'unrated', r'directors cut', r'hc', r'korsub', r'sub', r'internal', r'limited', r'retail', r'hdr', r'dv', r'dovi', r'gaz'
     ]
     
-    # Fix: Ensure the substitution is inside the loop
     for word in junk:
         name = re.sub(fr'\b{word}\b', '', name)
 
-    # 3. Handle the dash split (Release group suffix)
-    # Only split if there is a dash and it's not the ONLY character
+    # Handle the dash split (Release group suffix)
     if '-' in name:
         parts = re.split(r'-(?=[^-]*$)', name)
-        if len(parts[0].strip()) > 2: # Don't strip if it leaves a 1-2 char string
+        if len(parts[0].strip()) > 2:
             name = parts[0]
 
-    # 4. Final Cleanup
+    # Final Cleanup: Dots/Underscores to spaces
     name = re.sub(r'[\._-]', ' ', name)
-    name = re.sub(r'\b(19|20)\d{2}\b', '', name) # Remove years
+    # Remove years like (2024) or .2024.
+    name = re.sub(r'\b(19|20)\d{2}\b', '', name)
     
     return re.sub(r'\s+', ' ', name).strip().title()
 
@@ -92,7 +91,14 @@ def sync_worker():
 
         try:
             search_type = "tv" if cat == "tv" else "movie"
+            # Primary Search
             r = requests.get(f"https://api.themoviedb.org/3/search/{search_type}?query={clean_name}", headers=headers, timeout=5).json()
+            
+            # Alt Search for "And" vs "&" (Deadpool Fix)
+            if not r.get('results') and 'And' in clean_name:
+                alt_name = clean_name.replace('And', '&')
+                r = requests.get(f"https://api.themoviedb.org/3/search/{search_type}?query={alt_name}", headers=headers, timeout=5).json()
+
             if r.get('results'):
                 res = r['results'][0]
                 tmdb_id = res['id']
@@ -181,7 +187,6 @@ BASE_HTML = """
 def home(cat='movies'):
     conn = get_db()
     if cat == 'tv':
-        # Improved SQL: It tries to find ' - S', but if it can't, it just uses the full title.
         rows = conn.execute('''
             SELECT DISTINCT 
                 CASE 
@@ -203,7 +208,6 @@ def home(cat='movies'):
     grid_html = '<div class="grid">'
     for r in rows:
         if cat == 'tv':
-            # We use r[0] (Series Name) and r[1] (Poster)
             grid_html += f'''
             <a href="/series/{r[0]}" class="card">
                 <img src="{r[1]}" onerror="this.src='https://via.placeholder.com/500x750?text=No+Poster'">
@@ -215,22 +219,19 @@ def home(cat='movies'):
                 <img src="{r[3]}" onerror="this.src='https://via.placeholder.com/500x750?text=No+Poster'">
                 <div class="card-info"><span class="card-title">{r[2]}</span></div>
             </a>'''
-    grid_html += '</div>'
-    return render_template_string(BASE_HTML, body_content=grid_html)
-    
-@app.route('/series/<path:series_name>') # Added <path:> to handle spaces/dots in names
+    return render_template_string(BASE_HTML, body_content=grid_html + '</div>')
+
+@app.route('/series/<path:series_name>')
 def series_view(series_name):
     conn = get_db()
-    # Use a more flexible LIKE query to find episodes
     eps = conn.execute('SELECT filename, path, title, poster, desc FROM metadata WHERE title LIKE ? AND category = "tv"', (f"{series_name}%",)).fetchall()
     conn.close()
     
     if not eps:
-        return f"<h1>No episodes found for {series_name}</h1><a href='/category/tv'>Back</a>"
+        return render_template_string(BASE_HTML, body_content=f"<h1>No episodes found</h1><a href='/category/tv'>Back</a>")
 
     seasons = {}
     for e in eps:
-        # Better season extraction
         match = re.search(r'[sS](\d+)', e[2])
         s_num = match.group(1) if match else "01"
         if s_num not in seasons: seasons[s_num] = []
@@ -239,7 +240,6 @@ def series_view(series_name):
     html = f'<a href="/category/tv" class="back-btn">← Back to TV Shows</a><h1>{series_name}</h1>'
     for s, e_list in sorted(seasons.items()):
         html += f'<h3>Season {s}</h3><div class="grid tv-grid">'
-        # Sort episodes by title so S01E01 comes before S01E02
         for e in sorted(e_list, key=lambda x: x[2]):
             html += f'''
             <a href="/play/tv/{e[1]}" class="card tv-card">
@@ -305,13 +305,3 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
-
-
-
-
-
-
-
-
-
-
