@@ -3,6 +3,7 @@ import requests
 import random
 import sqlite3
 import re
+import threading # New: For background scanning
 from flask import Flask, render_template_string, send_from_directory, request, jsonify, redirect, url_for
 
 app = Flask(__name__)
@@ -12,62 +13,76 @@ TMDB_API_KEY = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJiMTE3OWQ4YTVlZGM4NWI4ZGE5M2E1MTB
 DB_PATH = '/config/vaultstream.db'
 PATHS = {'movies': '/movies', 'tv': '/tv'}
 
-# Initialize Database for Progress and Metadata Caching
 def init_db():
     if not os.path.exists('/config'): os.makedirs('/config')
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute('CREATE TABLE IF NOT EXISTS progress (filename TEXT PRIMARY KEY, seconds REAL)')
         conn.execute('''CREATE TABLE IF NOT EXISTS metadata 
-                        (filename TEXT PRIMARY KEY, title TEXT, poster TEXT, backdrop TEXT, desc TEXT)''')
+                        (filename TEXT PRIMARY KEY, category TEXT, path TEXT, title TEXT, poster TEXT, backdrop TEXT, desc TEXT)''')
 init_db()
 
-# --- HELPER FUNCTIONS ---
+# --- THE CLEANERS ---
 def clean_filename(name):
-    name = re.sub(r'\(.*?\)|\[.*?\]', '', name)
+    name = re.sub(r'\(.*?\)|\[.*?\]', '', name.lower())
     junk = ['1080p', '720p', '4k', 'bluray', 'x264', 'x265', 'h264', 'webrip', 'dvdrip', 'multi']
-    for word in junk:
-        name = re.sub(f'(?i){word}', '', name)
-    return name.replace('.', ' ').replace('_', ' ').strip()
+    for word in junk: name = re.sub(f'(?i){word}', '', name)
+    return re.sub(r'[\._-]', ' ', name).strip().title()
 
-def get_cached_metadata(filename):
-    with sqlite3.connect(DB_PATH) as conn:
-        row = conn.execute('SELECT title, poster, backdrop, desc FROM metadata WHERE filename = ?', (filename,)).fetchone()
-        if row:
-            return {'title': row[0], 'poster': row[1], 'backdrop': row[2], 'desc': row[3]}
-    
-    # Fetch and Cache if not found
-    clean_name = clean_filename(filename)
-    url = f"https://api.themoviedb.org/3/search/multi?query={clean_name}"
+def extract_tv_info(filename):
+    match = re.search(r'[sS](\d+)[eE](\d+)|(\d+)x(\d+)', filename)
+    if match:
+        s = int(match.group(1) or match.group(3))
+        e = int(match.group(2) or match.group(4))
+        return s, e
+    return None, None
+
+# --- BACKGROUND SYNC PROCESS ---
+def sync_worker():
+    print("Started Background Sync...")
     headers = {"Authorization": f"Bearer {TMDB_API_KEY}", "accept": "application/json"}
-    meta = {'title': filename, 'poster': "https://via.placeholder.com/500x750?text=No+Poster", 'backdrop': '', 'desc': 'No description available.'}
     
-    try:
-        r = requests.get(url, headers=headers, timeout=3).json()
-        if r.get('results'):
-            res = r['results'][0]
-            meta = {
-                'title': res.get('title') or res.get('name') or filename,
-                'poster': f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}" if res.get('poster_path') else meta['poster'],
-                'backdrop': f"https://image.tmdb.org/t/p/original{res.get('backdrop_path')}" if res.get('backdrop_path') else "",
-                'desc': res.get('overview', meta['desc'])
-            }
-            with sqlite3.connect(DB_PATH) as conn:
-                conn.execute('INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?, ?)', 
-                             (filename, meta['title'], meta['poster'], meta['backdrop'], meta['desc']))
-    except: pass
-    return meta
+    for cat, base_path in PATHS.items():
+        if not os.path.exists(base_path): continue
+        
+        for root, _, files in os.walk(base_path):
+            for f in files:
+                if f.lower().endswith(('.mp4', '.mkv', '.webm')):
+                    filename = os.path.splitext(f)[0]
+                    rel_path = os.path.relpath(os.path.join(root, f), base_path)
+                    
+                    # Check if already in DB to save API calls
+                    with sqlite3.connect(DB_PATH) as conn:
+                        exists = conn.execute('SELECT 1 FROM metadata WHERE filename = ?', (filename,)).fetchone()
+                        if exists: continue
 
-def scan_files(path):
-    results = []
-    if not os.path.exists(path): return []
-    for root, _, files in os.walk(path):
-        for f in files:
-            if f.lower().endswith(('.mp4', '.mkv', '.webm')):
-                rel = os.path.relpath(os.path.join(root, f), path)
-                results.append({'name': os.path.splitext(f)[0], 'path': rel})
-    return results
+                    # Fetch New Meta
+                    clean_name = clean_filename(filename)
+                    season, episode = extract_tv_info(f)
+                    
+                    try:
+                        search_url = f"https://api.themoviedb.org/3/search/multi?query={clean_name}"
+                        search_data = requests.get(search_url, headers=headers).json()
+                        
+                        if search_data.get('results'):
+                            res = search_data['results'][0]
+                            tmdb_id = res['id']
+                            media_type = res.get('media_type', 'movie')
+                            title, poster, backdrop, desc = (res.get('title') or res.get('name')), f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}", f"https://image.tmdb.org/t/p/original{res.get('backdrop_path')}", res.get('overview')
 
-# --- MODERN STYLES ---
+                            if media_type == 'tv' and season:
+                                ep_url = f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season}/episode/{episode}"
+                                ep = requests.get(ep_url, headers=headers).json()
+                                if 'id' in ep:
+                                    title = f"{title} - S{season:02d}E{episode:02d}"
+                                    if ep.get('still_path'): poster = f"https://image.tmdb.org/t/p/w500{ep.get('still_path')}"
+
+                            with sqlite3.connect(DB_PATH) as conn:
+                                conn.execute('INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?)', 
+                                             (filename, cat, rel_path, title, poster, backdrop, desc))
+                    except Exception as e: print(f"Error syncing {filename}: {e}")
+    print("Sync Complete!")
+
+# --- HTML STYLES (Wider TV Cards) ---
 BASE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -75,23 +90,23 @@ BASE_HTML = """
     <title>VaultStream</title>
     <style>
         :root { --primary: #e50914; --bg: #080808; --text: #fff; }
-        body { background: var(--bg); color: var(--text); font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; margin: 0; padding: 0; overflow-x: hidden; }
-        nav { background: rgba(0,0,0,0.9); height: 70px; display: flex; align-items: center; padding: 0 4%; position: fixed; width: 100%; z-index: 1000; box-sizing: border-box; border-bottom: 1px solid #222;}
+        body { background: var(--bg); color: var(--text); font-family: 'Helvetica Neue', Arial; margin: 0; padding: 0; }
+        nav { background: rgba(0,0,0,0.95); height: 70px; display: flex; align-items: center; padding: 0 4%; position: fixed; width: 100%; z-index: 1000; box-sizing: border-box; border-bottom: 1px solid #222;}
         .logo { color: var(--primary); font-size: 1.8rem; font-weight: bold; text-decoration: none; margin-right: 40px; }
-        .nav-links { display: flex; gap: 20px; flex-grow: 1; align-items: center; }
-        .nav-links a { color: #e5e5e5; text-decoration: none; font-size: 0.9rem; transition: 0.3s; }
-        .nav-links a:hover { color: var(--primary); }
-        .btn-sync { background: #333; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; text-decoration: none; font-size: 0.8rem; margin-left: auto;}
+        .nav-links a { color: #e5e5e5; text-decoration: none; margin-right: 25px; font-size: 0.9rem; }
+        .btn-sync { background: var(--primary); color: white; border: none; padding: 8px 20px; border-radius: 4px; cursor: pointer; text-decoration: none; margin-left: auto; font-weight: bold;}
         
-        .hero { height: 75vh; background-size: cover; background-position: center top; display: flex; align-items: center; position: relative; padding: 0 4%; }
-        .hero-overlay { position: absolute; top:0; left:0; width:100%; height:100%; background: linear-gradient(to top, var(--bg), transparent 70%), linear-gradient(to right, var(--bg) 20%, transparent 80%); }
-        .hero-content { position: relative; z-index: 2; max-width: 700px; }
+        .container { padding: 100px 4% 40px 4%; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 20px; }
+        .tv-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
         
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; padding: 40px 4%; }
-        .card { border-radius: 4px; overflow: hidden; transition: 0.4s; cursor: pointer; text-decoration: none; color: inherit; background: #141414; position: relative; }
-        .card:hover { transform: scale(1.08); z-index: 10; box-shadow: 0 10px 20px rgba(0,0,0,0.8); }
-        .card img { width: 100%; aspect-ratio: 2/3; object-fit: cover; }
-        .card-info { padding: 10px; font-size: 0.85rem; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;}
+        .card { border-radius: 8px; overflow: hidden; transition: 0.4s; cursor: pointer; text-decoration: none; color: inherit; background: #141414; border: 1px solid #222; }
+        .card:hover { transform: scale(1.05); border-color: #444; }
+        .card img { width: 100%; aspect-ratio: 16/9; object-fit: cover; }
+        .movie-card img { aspect-ratio: 2/3; }
+        .card-info { padding: 12px; }
+        .card-title { font-weight: bold; font-size: 0.9rem; margin-bottom: 5px; display: block; }
+        .card-desc { font-size: 0.75rem; color: #aaa; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
     </style>
 </head>
 <body>
@@ -100,10 +115,10 @@ BASE_HTML = """
         <div class="nav-links">
             <a href="/category/movies">Movies</a>
             <a href="/category/tv">TV Shows</a>
-            <a href="/rescan" class="btn-sync">🔄 Sync Library</a>
+            <a href="/sync" class="btn-sync">Sync Library</a>
         </div>
     </nav>
-    {{ body_content | safe }}
+    <div class="container">{{ body_content | safe }}</div>
 </body>
 </html>
 """
@@ -112,49 +127,49 @@ BASE_HTML = """
 @app.route('/')
 @app.route('/category/<cat>')
 def home(cat='movies'):
-    all_media = scan_files(PATHS.get(cat, PATHS['movies']))
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute('SELECT filename, path, title, poster, desc FROM metadata WHERE category = ?', (cat,)).fetchall()
     
-    featured = random.choice(all_media) if all_media else None
-    meta = get_cached_metadata(featured['name']) if featured else {}
+    if not rows:
+        return render_template_string(BASE_HTML, body_content="<h2>Library is empty. Click 'Sync Library' to begin!</h2>")
+
+    grid_class = "grid tv-grid" if cat == 'tv' else "grid"
+    card_class = "card" if cat == 'tv' else "card movie-card"
     
-    hero_html = ""
-    if featured:
-        hero_html = f"""
-        <div class="hero" style="background-image: url('{meta.get('backdrop')}');">
-            <div class="hero-overlay"></div>
-            <div class="hero-content">
-                <h1 style="font-size: 4rem; margin:0;">{meta.get('title')}</h1>
-                <p style="font-size: 1.1rem; margin: 20px 0; color: #ccc;">{meta.get('desc')}</p>
-                <a href="/play/{cat}/{featured['path']}" style="background:white; color:black; padding:12px 35px; border-radius:4px; font-weight:bold; text-decoration:none; font-size: 1.1rem;">▶ Play Now</a>
+    grid_html = f'<div class="{grid_class}">'
+    for r in rows:
+        grid_html += f"""
+        <a href="/play/{cat}/{r[1]}" class="{card_class}">
+            <img src="{r[3]}">
+            <div class="card-info">
+                <span class="card-title">{r[2]}</span>
+                <p class="card-desc">{r[4]}</p>
             </div>
-        </div>"""
-    
-    grid_html = '<div class="grid">'
-    for m in all_media:
-        m_meta = get_cached_metadata(m['name'])
-        grid_html += f'<a href="/play/{cat}/{m["path"]}" class="card"><img src="{m_meta["poster"]}"><div class="card-info">{m_meta["title"]}</div></a>'
+        </a>"""
     grid_html += '</div>'
+    return render_template_string(BASE_HTML, body_content=grid_html)
 
-    return render_template_string(BASE_HTML, body_content=hero_html + grid_html)
-
-@app.route('/rescan')
-def rescan():
-    # Clearing metadata cache is optional, but rescanning is the main goal
+@app.route('/sync')
+def sync():
+    # Run the worker in a separate thread so the user doesn't wait
+    thread = threading.Thread(target=sync_worker)
+    thread.start()
     return redirect(url_for('home'))
 
 @app.route('/play/<cat>/<path:filename>')
 def play(cat, filename):
     saved_time = 0
     with sqlite3.connect(DB_PATH) as conn:
-        row = conn.execute('SELECT seconds FROM progress WHERE filename = ?', (filename,)).fetchone()
+        row = conn.execute('SELECT seconds FROM progress WHERE filename = ?', (os.path.splitext(os.path.basename(filename))[0],)).fetchone()
         if row: saved_time = row[0]
 
-    content = f"""
-    <div style="padding-top: 100px; width: 90%; margin: 0 auto; text-align:center;">
-        <video id="v" style="width:100%; border-radius: 8px; background: black;" controls autoplay>
+    player_html = f"""
+    <div style="text-align:center;">
+        <video id="v" style="width:100%; max-height: 80vh; background: black;" controls autoplay>
             <source src="/stream/{cat}/{filename}">
         </video>
-        <h2 style="margin-top:20px;">{os.path.basename(filename)}</h2>
+        <h2 style="margin-top:20px;">{filename}</h2>
+        <a href="javascript:history.back()" style="color:var(--primary); text-decoration:none;">← Back to Library</a>
     </div>
     <script>
         const v = document.getElementById('v');
@@ -164,12 +179,12 @@ def play(cat, filename):
                 fetch('/save_progress', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ filename: "{filename}", seconds: v.currentTime }})
+                    body: JSON.stringify({{ filename: "{os.path.splitext(os.path.basename(filename))[0]}", seconds: v.currentTime }})
                 }});
             }}
         }}, 5000);
     </script>"""
-    return render_template_string(BASE_HTML, body_content=content)
+    return render_template_string(BASE_HTML, body_content=player_html)
 
 @app.route('/save_progress', methods=['POST'])
 def save_progress():
