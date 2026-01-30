@@ -15,12 +15,19 @@ PATHS = {'movies': '/movies', 'tv': '/tv'}
 # Global Sync Status
 sync_status = {"total": 0, "current": 0, "active": False}
 
+def get_db():
+    # check_same_thread=False is CRITICAL for Docker/Flask threading
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    return conn
+
 def init_db():
     if not os.path.exists('/config'): os.makedirs('/config', exist_ok=True)
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute('CREATE TABLE IF NOT EXISTS progress (filename TEXT PRIMARY KEY, seconds REAL)')
-        conn.execute('''CREATE TABLE IF NOT EXISTS metadata 
-                        (filename TEXT PRIMARY KEY, category TEXT, path TEXT, title TEXT, poster TEXT, backdrop TEXT, desc TEXT)''')
+    conn = get_db()
+    conn.execute('CREATE TABLE IF NOT EXISTS progress (filename TEXT PRIMARY KEY, seconds REAL)')
+    conn.execute('''CREATE TABLE IF NOT EXISTS metadata 
+                    (filename TEXT PRIMARY KEY, category TEXT, path TEXT, title TEXT, poster TEXT, backdrop TEXT, desc TEXT)''')
+    conn.close()
+
 init_db()
 
 # --- HELPERS ---
@@ -39,7 +46,6 @@ def sync_worker():
     sync_status["active"] = True
     sync_status["current"] = 0
     
-    # Pre-scan to count total files
     all_files = []
     for cat, base_path in PATHS.items():
         if os.path.exists(base_path):
@@ -51,35 +57,38 @@ def sync_worker():
     sync_status["total"] = len(all_files)
     headers = {"Authorization": f"Bearer {TMDB_API_KEY}", "accept": "application/json"}
 
+    conn = get_db()
     for cat, base_path, root, f in all_files:
         fname_no_ext = os.path.splitext(f)[0]
         rel_path = os.path.relpath(os.path.join(root, f), base_path)
         
         # Check if exists
-        with sqlite3.connect(DB_PATH) as conn:
-            if not conn.execute('SELECT 1 FROM metadata WHERE filename = ?', (fname_no_ext,)).fetchone():
-                clean_name = clean_filename(fname_no_ext)
-                season, episode = extract_tv_info(f)
-                try:
-                    r = requests.get(f"https://api.themoviedb.org/3/search/multi?query={clean_name}", headers=headers).json()
-                    if r.get('results'):
-                        res = r['results'][0]
-                        t, p, b, d = (res.get('title') or res.get('name')), f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}", f"https://image.tmdb.org/t/p/original{res.get('backdrop_path')}", res.get('overview')
-                        if res.get('media_type') == 'tv' and season:
-                            ep = requests.get(f"https://api.themoviedb.org/3/tv/{res['id']}/season/{season}/episode/{episode}", headers=headers).json()
-                            if 'id' in ep:
-                                t = f"{t} - S{season:02d}E{episode:02d}"
-                                if ep.get('still_path'): p = f"https://image.tmdb.org/t/p/w500{ep.get('still_path')}"
-                        
-                        with sqlite3.connect(DB_PATH) as conn:
-                            conn.execute('INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?)', (fname_no_ext, cat, rel_path, t, p, b, d))
-                except: pass
+        exists = conn.execute('SELECT 1 FROM metadata WHERE filename = ?', (fname_no_ext,)).fetchone()
+        if not exists:
+            clean_name = clean_filename(fname_no_ext)
+            season, episode = extract_tv_info(f)
+            try:
+                r = requests.get(f"https://api.themoviedb.org/3/search/multi?query={clean_name}", headers=headers, timeout=5).json()
+                if r.get('results'):
+                    res = r['results'][0]
+                    t, p, b, d = (res.get('title') or res.get('name')), f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}", f"https://image.tmdb.org/t/p/original{res.get('backdrop_path')}", res.get('overview', '')
+                    
+                    if res.get('media_type') == 'tv' and season:
+                        ep_r = requests.get(f"https://api.themoviedb.org/3/tv/{res['id']}/season/{season}/episode/{episode}", headers=headers, timeout=5).json()
+                        if 'id' in ep_r:
+                            t = f"{t} - S{season:02d}E{episode:02d}"
+                            if ep_r.get('still_path'): p = f"https://image.tmdb.org/t/p/w500{ep_r.get('still_path')}"
+                    
+                    conn.execute('INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?)', (fname_no_ext, cat, rel_path, t, p, b, d))
+                    conn.commit()
+            except: pass
         
         sync_status["current"] += 1
-
+    
+    conn.close()
     sync_status["active"] = False
 
-# --- UI ---
+# --- UI TEMPLATE ---
 BASE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -92,20 +101,17 @@ BASE_HTML = """
         .logo { color: var(--primary); font-size: 1.8rem; font-weight: bold; text-decoration: none; margin-right: 40px; }
         .nav-links a { color: #e5e5e5; text-decoration: none; margin-right: 25px; font-size: 0.9rem; }
         .btn-sync { background: var(--primary); color: white; border: none; padding: 8px 20px; border-radius: 4px; cursor: pointer; text-decoration: none; margin-left: auto; font-weight: bold;}
-        
-        #progress-container { position: fixed; top: 70px; left: 0; width: 100%; height: 5px; background: #222; display: none; z-index: 1001; }
+        #progress-container { position: fixed; top: 70px; left: 0; width: 100%; height: 4px; background: #222; display: none; z-index: 1001; }
         #progress-bar { height: 100%; width: 0%; background: var(--primary); transition: width 0.3s; }
-        #sync-text { position: fixed; top: 80px; right: 4%; font-size: 0.7rem; color: #aaa; display: none; z-index: 1001; }
-
         .container { padding: 100px 4% 40px 4%; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; }
-        .tv-grid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
-        .card { border-radius: 8px; overflow: hidden; transition: 0.3s; cursor: pointer; text-decoration: none; color: inherit; background: #141414; border: 1px solid #222; }
-        .card:hover { transform: scale(1.05); border-color: #444; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 25px; }
+        .tv-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+        .card { border-radius: 8px; overflow: hidden; transition: 0.3s; cursor: pointer; text-decoration: none; color: inherit; background: #141414; border: 1px solid #222; display: flex; flex-direction: column; }
+        .card:hover { transform: scale(1.05); border-color: #e50914; }
         .card img { width: 100%; aspect-ratio: 2/3; object-fit: cover; }
         .tv-card img { aspect-ratio: 16/9; }
-        .card-info { padding: 10px; }
-        .card-title { font-weight: bold; font-size: 0.85rem; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .card-info { padding: 12px; }
+        .card-title { font-weight: bold; font-size: 0.9rem; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     </style>
 </head>
 <body>
@@ -118,54 +124,41 @@ BASE_HTML = """
         </div>
     </nav>
     <div id="progress-container"><div id="progress-bar"></div></div>
-    <div id="sync-text">Syncing: <span id="sync-count">0</span> / <span id="sync-total">0</span></div>
-
     <div class="container">{{ body_content | safe }}</div>
-
     <script>
         function startSync() {
             fetch('/sync').then(() => checkProgress());
         }
-
         function checkProgress() {
             const container = document.getElementById('progress-container');
             const bar = document.getElementById('progress-bar');
-            const text = document.getElementById('sync-text');
-            const count = document.getElementById('sync-count');
-            const total = document.getElementById('sync-total');
-
             setInterval(() => {
                 fetch('/sync_progress').then(r => r.json()).then(data => {
                     if (data.active) {
                         container.style.display = 'block';
-                        text.style.display = 'block';
-                        let percent = (data.current / data.total) * 100;
-                        bar.style.width = percent + '%';
-                        count.innerText = data.current;
-                        total.innerText = data.total;
-                    } else {
-                        if (container.style.display === 'block') location.reload();
-                        container.style.display = 'none';
-                        text.style.display = 'none';
+                        bar.style.width = ((data.current / data.total) * 100) + '%';
+                    } else if (container.style.display === 'block') {
+                        location.reload();
                     }
                 });
             }, 1000);
         }
-        // Auto-check on page load in case sync is already running
         checkProgress();
     </script>
 </body>
 </html>
 """
 
+# --- ROUTES ---
 @app.route('/')
 @app.route('/category/<cat>')
 def home(cat='movies'):
-    with sqlite3.connect(DB_PATH) as conn:
-        rows = conn.execute('SELECT filename, path, title, poster FROM metadata WHERE category = ?', (cat,)).fetchall()
+    conn = get_db()
+    rows = conn.execute('SELECT filename, path, title, poster FROM metadata WHERE category = ?', (cat,)).fetchall()
+    conn.close()
     
     if not rows:
-        return render_template_string(BASE_HTML, body_content="<h2>No media found. Click 'Sync Library'.</h2>")
+        return render_template_string(BASE_HTML, body_content="<h2>Library is empty. Click 'Sync Library' to scan your files!</h2>")
 
     grid_class = "grid tv-grid" if cat == 'tv' else "grid"
     card_class = "card tv-card" if cat == 'tv' else "card"
@@ -190,9 +183,10 @@ def get_progress():
 def play(cat, filename):
     fname = os.path.splitext(os.path.basename(filename))[0]
     saved_time = 0
-    with sqlite3.connect(DB_PATH) as conn:
-        row = conn.execute('SELECT seconds FROM progress WHERE filename = ?', (fname,)).fetchone()
-        if row: saved_time = row[0]
+    conn = get_db()
+    row = conn.execute('SELECT seconds FROM progress WHERE filename = ?', (fname,)).fetchone()
+    conn.close()
+    if row: saved_time = row[0]
 
     player_html = f"""
     <div style="text-align:center;">
@@ -216,8 +210,10 @@ def play(cat, filename):
 @app.route('/save_progress', methods=['POST'])
 def save_progress():
     d = request.json
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute('INSERT OR REPLACE INTO progress VALUES (?, ?)', (d['filename'], d['seconds']))
+    conn = get_db()
+    conn.execute('INSERT OR REPLACE INTO progress VALUES (?, ?)', (d['filename'], d['seconds']))
+    conn.commit()
+    conn.close()
     return jsonify(success=True)
 
 @app.route('/stream/<cat>/<path:filename>')
@@ -225,4 +221,4 @@ def stream(cat, filename):
     return send_from_directory(PATHS.get(cat), filename)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, threaded=True)
+    app.run(host='0.0.0.0', port=5000)
