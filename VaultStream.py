@@ -12,13 +12,10 @@ TMDB_API_KEY = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJiMTE3OWQ4YTVlZGM4NWI4ZGE5M2E1MTB
 DB_PATH = '/config/vaultstream.db'
 PATHS = {'movies': '/movies', 'tv': '/tv'}
 
-# Global Sync Status
 sync_status = {"total": 0, "current": 0, "active": False}
 
 def get_db():
-    # check_same_thread=False is CRITICAL for Docker/Flask threading
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    return conn
+    return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 def init_db():
     if not os.path.exists('/config'): os.makedirs('/config', exist_ok=True)
@@ -32,31 +29,12 @@ init_db()
 
 # --- HELPERS ---
 def clean_filename(name):
-    # 1. Lowercase and remove brackets/parens content
     name = re.sub(r'\(.*?\)|\[.*?\]', '', name.lower())
-    
-    # 2. Aggressive list of junk keywords to delete entirely
-    junk = [
-        r'1080p', r'720p', r'4k', r'2160p', r'bluray', r'bdrip', r'brrip', 
-        r'x264', r'x265', r'h264', r'hevc', r'webrip', r'web-rip', r'dvdrip', 
-        r'aac', r'dts', r'dd5\.1', r'ac3', r'multi', r'dual-audio', 
-        r'yts', r'yify', r'rarbg', r'psa', r'get-rarbg', r'galaxyrg'
-    ]
-    
-    for word in junk:
-        name = re.sub(fr'\b{word}\b', '', name)
-
-    # 3. Replace all dots, underscores, and dashes with spaces
+    junk = [r'1080p', r'720p', r'4k', r'2160p', r'bluray', r'bdrip', r'brrip', r'x264', r'x265', r'h264', r'hevc', r'webrip', r'web-rip', r'dvdrip']
+    for word in junk: name = re.sub(fr'\b{word}\b', '', name)
     name = re.sub(r'[\._-]', ' ', name)
-
-    # 4. Remove any years at the end (e.g., "2023") to help search broaden
     name = re.sub(r'\b(19|20)\d{2}\b', '', name)
-
-    # 5. Final cleanup of extra whitespace
     return re.sub(r'\s+', ' ', name).strip().title()
-
-# Inside sync_worker(), update the search URL to include more parameters:
-# search_url = f"https://api.themoviedb.org/3/search/multi?query={clean_name}&include_adult=false&language=en-US"
 
 def extract_tv_info(filename):
     match = re.search(r'[sS](\d+)[eE](\d+)|(\d+)x(\d+)', filename)
@@ -66,7 +44,6 @@ def sync_worker():
     global sync_status
     sync_status["active"] = True
     sync_status["current"] = 0
-    
     all_files = []
     for cat, base_path in PATHS.items():
         if os.path.exists(base_path):
@@ -82,57 +59,41 @@ def sync_worker():
     for cat, base_path, root, f in all_files:
         fname_no_ext = os.path.splitext(f)[0]
         rel_path = os.path.relpath(os.path.join(root, f), base_path)
-        
-        # Skip if already exists
         if conn.execute('SELECT 1 FROM metadata WHERE filename = ?', (fname_no_ext,)).fetchone():
             sync_status["current"] += 1
             continue
 
         clean_name = clean_filename(fname_no_ext)
         season, episode = extract_tv_info(f)
-        
-        # Defaults
-        t, p, b, d = clean_name, "https://via.placeholder.com/500x750?text=" + clean_name.replace(" ", "+"), "", "No description."
+        t, p, b, d = clean_name, "https://via.placeholder.com/500x750?text=" + clean_name.replace(" ", "+"), "", ""
 
         try:
-            # 1. Search for the Series/Movie
             search_type = "tv" if cat == "tv" else "movie"
             r = requests.get(f"https://api.themoviedb.org/3/search/{search_type}?query={clean_name}", headers=headers, timeout=5).json()
-            
             if r.get('results'):
                 res = r['results'][0]
                 tmdb_id = res['id']
                 t = res.get('name') or res.get('title')
                 p = f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}"
-                b = f"https://image.tmdb.org/t/p/original{res.get('backdrop_path')}"
                 d = res.get('overview')
 
-                # 2. If it's TV, drill down to Season/Episode like the Brooklyn 99 example
-                if cat == "tv" and season is not None and episode is not None:
-                    ep_url = f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season}/episode/{episode}"
-                    ep_r = requests.get(ep_url, headers=headers, timeout=5).json()
-                    
+                if cat == "tv" and season and episode:
+                    ep_r = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season}/episode/{episode}", headers=headers, timeout=5).json()
                     if 'id' in ep_r:
-                        # Update Title to show S04E02
                         t = f"{t} - S{season:02d}E{episode:02d}: {ep_r.get('name')}"
-                        # Update description to the episode plot
                         d = ep_r.get('overview') or d
-                        # Update "Poster" to the episode Still (horizontal image)
-                        if ep_r.get('still_path'):
-                            p = f"https://image.tmdb.org/t/p/w500{ep_r.get('still_path')}"
+                        if ep_r.get('still_path'): p = f"https://image.tmdb.org/t/p/w500{ep_r.get('still_path')}"
 
-        except Exception as e:
-            print(f"Error matching {f}: {e}")
+        except: pass
 
-        conn.execute('INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?)', 
-                     (fname_no_ext, cat, rel_path, t, p, b, d))
+        conn.execute('INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?)', (fname_no_ext, cat, rel_path, t, p, b, d))
         conn.commit()
         sync_status["current"] += 1
     
     conn.close()
     sync_status["active"] = False
 
-# --- UI TEMPLATE ---
+# --- UI ---
 BASE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -149,13 +110,16 @@ BASE_HTML = """
         #progress-bar { height: 100%; width: 0%; background: var(--primary); transition: width 0.3s; }
         .container { padding: 100px 4% 40px 4%; }
         .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 25px; }
-        .tv-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
-        .card { border-radius: 8px; overflow: hidden; transition: 0.3s; cursor: pointer; text-decoration: none; color: inherit; background: #141414; border: 1px solid #222; display: flex; flex-direction: column; }
-        .card:hover { transform: scale(1.05); border-color: #e50914; }
+        .tv-grid { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+        .card { border-radius: 4px; overflow: hidden; transition: 0.3s; cursor: pointer; text-decoration: none; color: inherit; background: #141414; display: flex; flex-direction: column; border: 1px solid transparent;}
+        .card:hover { transform: scale(1.05); border-color: #444; }
         .card img { width: 100%; aspect-ratio: 2/3; object-fit: cover; }
         .tv-card img { aspect-ratio: 16/9; }
-        .card-info { padding: 12px; }
-        .card-title { font-weight: bold; font-size: 0.9rem; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .card-info { padding: 10px; }
+        .card-title { font-weight: bold; font-size: 0.85rem; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .card-desc { font-size: 0.75rem; color: #999; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 5px; }
+        h1 { margin-bottom: 30px; }
+        .back-btn { display: inline-block; margin-bottom: 20px; color: var(--primary); text-decoration: none; font-size: 0.9rem; }
     </style>
 </head>
 <body>
@@ -164,15 +128,13 @@ BASE_HTML = """
         <div class="nav-links">
             <a href="/category/movies">Movies</a>
             <a href="/category/tv">TV Shows</a>
-            <button onclick="startSync()" class="btn-sync" id="syncBtn">Sync Library</button>
+            <button onclick="startSync()" class="btn-sync">Sync Library</button>
         </div>
     </nav>
     <div id="progress-container"><div id="progress-bar"></div></div>
     <div class="container">{{ body_content | safe }}</div>
     <script>
-        function startSync() {
-            fetch('/sync').then(() => checkProgress());
-        }
+        function startSync() { fetch('/sync').then(() => checkProgress()); }
         function checkProgress() {
             const container = document.getElementById('progress-container');
             const bar = document.getElementById('progress-bar');
@@ -181,9 +143,7 @@ BASE_HTML = """
                     if (data.active) {
                         container.style.display = 'block';
                         bar.style.width = ((data.current / data.total) * 100) + '%';
-                    } else if (container.style.display === 'block') {
-                        location.reload();
-                    }
+                    } else if (container.style.display === 'block') { location.reload(); }
                 });
             }, 1000);
         }
@@ -193,77 +153,46 @@ BASE_HTML = """
 </html>
 """
 
-# --- ROUTES ---
 @app.route('/')
 @app.route('/category/<cat>')
 def home(cat='movies'):
     conn = get_db()
     if cat == 'tv':
-        # Group by the first part of the title (The Series Name)
-        # We assume the title was saved as "Series - S01E01"
-        rows = conn.execute('''
-            SELECT DISTINCT 
-                REPLACE(SUBSTR(title, 1, INSTR(title, ' - S') - 1), '', title) as series_name,
-                poster, category 
-            FROM metadata 
-            WHERE category = 'tv' 
-            GROUP BY series_name
-        ''').fetchall()
+        rows = conn.execute("SELECT DISTINCT REPLACE(SUBSTR(title, 1, INSTR(title, ' - S') - 1), '', title) as series_name, poster FROM metadata WHERE category = 'tv' GROUP BY series_name").fetchall()
     else:
         rows = conn.execute('SELECT filename, path, title, poster FROM metadata WHERE category = "movies"').fetchall()
     conn.close()
-
-    if not rows:
-        return render_template_string(BASE_HTML, body_content="<h2>Library is empty. Click Sync!</h2>")
+    
+    if not rows: return render_template_string(BASE_HTML, body_content="<h2>Library empty. Click Sync.</h2>")
 
     grid_html = '<div class="grid">'
     for r in rows:
         if cat == 'tv':
-            # Link to a new route that shows seasons/episodes for this show
-            grid_html += f'''
-            <a href="/series/{r[0]}" class="card">
-                <img src="{r[1]}">
-                <div class="card-info"><span class="card-title">{r[0]}</span></div>
-            </a>'''
+            grid_html += f'<a href="/series/{r[0]}" class="card"><img src="{r[1]}"><div class="card-info"><span class="card-title">{r[0]}</span></div></a>'
         else:
-            grid_html += f'''
-            <a href="/play/movies/{r[1]}" class="card">
-                <img src="{r[3]}">
-                <div class="card-info"><span class="card-title">{r[2]}</span></div>
-            </a>'''
-    grid_html += '</div>'
-    return render_template_string(BASE_HTML, body_content=grid_html)
+            grid_html += f'<a href="/play/movies/{r[1]}" class="card"><img src="{r[3]}"><div class="card-info"><span class="card-title">{r[2]}</span></div></a>'
+    return render_template_string(BASE_HTML, body_content=grid_html + '</div>')
 
-@app.route('/series/<series_name>')
-def series_view(series_name):
+@app.route('/series/<name>')
+def series_view(name):
     conn = get_db()
-    # Find all episodes belonging to this series
-    episodes = conn.execute('SELECT filename, path, title, poster, desc FROM metadata WHERE title LIKE ?', (f"{series_name}%",)).fetchall()
+    eps = conn.execute('SELECT filename, path, title, poster, desc FROM metadata WHERE title LIKE ?', (f"{name}%",)).fetchall()
     conn.close()
-
-    # Group by Season
-    seasons = {}
-    for ep in episodes:
-        match = re.search(r'S(\d+)', ep[2])
-        s_num = match.group(1) if match else "00"
-        if s_num not in seasons: seasons[s_num] = []
-        seasons[s_num].append(ep)
-
-    content = f"<h1>{series_name}</h1>"
-    for s_num, eps in sorted(seasons.items()):
-        content += f"<h3>Season {s_num}</h3><div class='grid tv-grid'>"
-        for e in sorted(eps, key=lambda x: x[2]):
-            content += f'''
-            <a href="/play/tv/{e[1]}" class="card tv-card">
-                <img src="{e[3]}">
-                <div class="card-info">
-                    <span class="card-title">{e[2]}</span>
-                    <p class="card-desc">{e[4]}</p>
-                </div>
-            </a>'''
-        content += "</div><hr style='border: 1px solid #222; margin: 40px 0;'>"
     
-    return render_template_string(BASE_HTML, body_content=content)
+    seasons = {}
+    for e in eps:
+        match = re.search(r'S(\d+)', e[2])
+        s_num = match.group(1) if match else "01"
+        if s_num not in seasons: seasons[s_num] = []
+        seasons[s_num].append(e)
+
+    html = f'<a href="/category/tv" class="back-btn">← Back to TV Shows</a><h1>{name}</h1>'
+    for s, e_list in sorted(seasons.items()):
+        html += f'<h3>Season {s}</h3><div class="grid tv-grid">'
+        for e in sorted(e_list, key=lambda x: x[2]):
+            html += f'<a href="/play/tv/{e[1]}" class="card tv-card"><img src="{e[3]}"><div class="card-info"><span class="card-title">{e[2]}</span><p class="card-desc">{e[4]}</p></div></a>'
+        html += '</div><br><hr style="border:0; border-top:1px solid #222"><br>'
+    return render_template_string(BASE_HTML, body_content=html)
 
 @app.route('/sync')
 def sync():
@@ -318,6 +247,7 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
 
 
 
