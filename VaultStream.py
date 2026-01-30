@@ -30,7 +30,7 @@ init_db()
 # --- HELPERS ---
 def clean_filename(name):
     name = re.sub(r'\(.*?\)|\[.*?\]', '', name.lower())
-    junk = [r'1080p', r'720p', r'4k', r'2160p', r'bluray', r'bdrip', r'brrip', r'x264', r'x265', r'h264', r'hevc', r'webrip', r'web-rip', r'dvdrip']
+    junk = [r'1080p', r'720p', r'4k', r'2160p', r'bluray', r'bdrip', r'brrip', r'x264', r'x265', r'h264', r'hevc', r'webrip', r'web-rip', r'dvdrip', 'yify','aac', 'amzn','webrip',''1x264-galaxyrg]
     for word in junk: name = re.sub(fr'\b{word}\b', '', name)
     name = re.sub(r'[\._-]', ' ', name)
     name = re.sub(r'\b(19|20)\d{2}\b', '', name)
@@ -247,6 +247,7 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
 
 
 
