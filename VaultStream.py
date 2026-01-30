@@ -187,6 +187,7 @@ BASE_HTML = """
 def home(cat='movies'):
     conn = get_db()
     if cat == 'tv':
+        # Get unique shows only
         rows = conn.execute('''
             SELECT DISTINCT 
                 CASE 
@@ -202,21 +203,19 @@ def home(cat='movies'):
         rows = conn.execute('SELECT filename, path, title, poster FROM metadata WHERE category = "movies"').fetchall()
     conn.close()
 
-    if not rows:
-        return render_template_string(BASE_HTML, body_content="<h2>Library is empty. Click Sync!</h2>")
-
     grid_html = '<div class="grid">'
     for r in rows:
         if cat == 'tv':
+            # CLICKING A SHOW TAKES YOU TO THE SEASON FOLDERS
             grid_html += f'''
             <a href="/series/{r[0]}" class="card">
-                <img src="{r[1]}" onerror="this.src='https://via.placeholder.com/500x750?text=No+Poster'">
+                <img src="{r[1]}" onerror="this.src='https://via.placeholder.com/500x750?text={r[0]}'">
                 <div class="card-info"><span class="card-title">{r[0]}</span></div>
             </a>'''
         else:
             grid_html += f'''
             <a href="/play/movies/{r[1]}" class="card">
-                <img src="{r[3]}" onerror="this.src='https://via.placeholder.com/500x750?text=No+Poster'">
+                <img src="{r[3]}" onerror="this.src='https://via.placeholder.com/500x750?text=Movie'">
                 <div class="card-info"><span class="card-title">{r[2]}</span></div>
             </a>'''
     return render_template_string(BASE_HTML, body_content=grid_html + '</div>')
@@ -224,33 +223,50 @@ def home(cat='movies'):
 @app.route('/series/<path:series_name>')
 def series_view(series_name):
     conn = get_db()
-    eps = conn.execute('SELECT filename, path, title, poster, desc FROM metadata WHERE title LIKE ? AND category = "tv"', (f"{series_name}%",)).fetchall()
+    # Find all episodes to determine what seasons exist
+    eps = conn.execute('SELECT title FROM metadata WHERE title LIKE ? AND category = "tv"', (f"{series_name}%",)).fetchall()
     conn.close()
     
-    if not eps:
-        return render_template_string(BASE_HTML, body_content=f"<h1>No episodes found</h1><a href='/category/tv'>Back</a>")
-
-    seasons = {}
+    # Extract unique season numbers
+    seasons = set()
     for e in eps:
-        match = re.search(r'[sS](\d+)', e[2])
-        s_num = match.group(1) if match else "01"
-        if s_num not in seasons: seasons[s_num] = []
-        seasons[s_num].append(e)
+        match = re.search(r'[sS](\d+)', e[0])
+        seasons.add(match.group(1) if match else "01")
 
-    html = f'<a href="/category/tv" class="back-btn">← Back to TV Shows</a><h1>{series_name}</h1>'
-    for s, e_list in sorted(seasons.items()):
-        html += f'<h3>Season {s}</h3><div class="grid tv-grid">'
-        for e in sorted(e_list, key=lambda x: x[2]):
-            html += f'''
-            <a href="/play/tv/{e[1]}" class="card tv-card">
-                <img src="{e[3]}" onerror="this.src='https://via.placeholder.com/500x280?text=Episode+Still'">
-                <div class="card-info">
-                    <span class="card-title">{e[2]}</span>
-                    <p class="card-desc">{e[4]}</p>
-                </div>
-            </a>'''
-        html += '</div><br><hr style="border:0; border-top:1px solid #222"><br>'
-    return render_template_string(BASE_HTML, body_content=html)
+    html = f'<a href="/category/tv" class="back-btn">← Back to Library</a><h1>{series_name}</h1>'
+    html += '<div class="grid">'
+    for s in sorted(list(seasons)):
+        label = "Specials" if s == "00" else f"Season {s}"
+        # CLICKING A SEASON TAKES YOU TO THE EPISODE LIST
+        html += f'''
+        <a href="/series/{series_name}/season/{s}" class="card">
+            <div style="aspect-ratio:2/3; background:#222; display:flex; align-items:center; justify-content:center; flex-direction:column;">
+                <span style="font-size:3rem;">📂</span>
+                <span style="margin-top:10px; font-weight:bold;">{label}</span>
+            </div>
+        </a>'''
+    return render_template_string(BASE_HTML, body_content=html + '</div>')
+
+@app.route('/series/<path:series_name>/season/<s_num>')
+def season_view(series_name, s_num):
+    conn = get_db()
+    # Only get episodes for THIS specific season
+    season_pattern = f"% - S{s_num}E%"
+    eps = conn.execute('SELECT filename, path, title, poster, desc FROM metadata WHERE title LIKE ? AND title LIKE ? AND category = "tv"', (f"{series_name}%", season_pattern)).fetchall()
+    conn.close()
+    
+    html = f'<a href="/series/{series_name}" class="back-btn">← Back to Seasons</a><h1>{series_name} - Season {s_num}</h1>'
+    html += '<div class="grid tv-grid">'
+    for e in sorted(eps, key=lambda x: x[2]):
+        html += f'''
+        <a href="/play/tv/{e[1]}" class="card tv-card">
+            <img src="{e[3]}" onerror="this.src='https://via.placeholder.com/500x280?text=Episode'">
+            <div class="card-info">
+                <span class="card-title">{e[2]}</span>
+                <p class="card-desc">{e[4]}</p>
+            </div>
+        </a>'''
+    return render_template_string(BASE_HTML, body_content=html + '</div>')
 
 @app.route('/sync')
 def sync():
@@ -305,3 +321,4 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
