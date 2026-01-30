@@ -83,51 +83,50 @@ def sync_worker():
         fname_no_ext = os.path.splitext(f)[0]
         rel_path = os.path.relpath(os.path.join(root, f), base_path)
         
-        # Check if already exists in DB
-        exists = conn.execute('SELECT 1 FROM metadata WHERE filename = ?', (fname_no_ext,)).fetchone()
+        # Skip if already exists
+        if conn.execute('SELECT 1 FROM metadata WHERE filename = ?', (fname_no_ext,)).fetchone():
+            sync_status["current"] += 1
+            continue
+
+        clean_name = clean_filename(fname_no_ext)
+        season, episode = extract_tv_info(f)
         
-        if not exists:
-            clean_name = clean_filename(fname_no_ext)
-            season, episode = extract_tv_info(f)
+        # Defaults
+        t, p, b, d = clean_name, "https://via.placeholder.com/500x750?text=" + clean_name.replace(" ", "+"), "", "No description."
+
+        try:
+            # 1. Search for the Series/Movie
+            search_type = "tv" if cat == "tv" else "movie"
+            r = requests.get(f"https://api.themoviedb.org/3/search/{search_type}?query={clean_name}", headers=headers, timeout=5).json()
             
-            # --- DEFAULT FALLBACK DATA (If TMDB fails) ---
-            t = clean_name
-            p = "https://via.placeholder.com/500x750?text=" + clean_name.replace(" ", "+")
-            b = ""
-            d = "No description found. Filename: " + f
+            if r.get('results'):
+                res = r['results'][0]
+                tmdb_id = res['id']
+                t = res.get('name') or res.get('title')
+                p = f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}"
+                b = f"https://image.tmdb.org/t/p/original{res.get('backdrop_path')}"
+                d = res.get('overview')
 
-            try:
-                # Attempt TMDB Search
-                r = requests.get(f"https://api.themoviedb.org/3/search/multi?query={clean_name}&include_adult=false", headers=headers, timeout=5).json()
-                
-                if r.get('results'):
-                    res = r['results'][0]
-                    tmdb_id = res['id']
+                # 2. If it's TV, drill down to Season/Episode like the Brooklyn 99 example
+                if cat == "tv" and season is not None and episode is not None:
+                    ep_url = f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season}/episode/{episode}"
+                    ep_r = requests.get(ep_url, headers=headers, timeout=5).json()
                     
-                    # Update with real TMDB data
-                    t = res.get('title') or res.get('name') or clean_name
-                    if res.get('poster_path'):
-                        p = f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}"
-                    if res.get('backdrop_path'):
-                        b = f"https://image.tmdb.org/t/p/original{res.get('backdrop_path')}"
-                    d = res.get('overview', '')
+                    if 'id' in ep_r:
+                        # Update Title to show S04E02
+                        t = f"{t} - S{season:02d}E{episode:02d}: {ep_r.get('name')}"
+                        # Update description to the episode plot
+                        d = ep_r.get('overview') or d
+                        # Update "Poster" to the episode Still (horizontal image)
+                        if ep_r.get('still_path'):
+                            p = f"https://image.tmdb.org/t/p/w500{ep_r.get('still_path')}"
 
-                    # TV Episode Specific logic
-                    if res.get('media_type') == 'tv' and season:
-                        ep_r = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season}/episode/{episode}", headers=headers, timeout=5).json()
-                        if 'id' in ep_r:
-                            t = f"{t} - S{season:02d}E{episode:02d}"
-                            if ep_r.get('still_path'):
-                                p = f"https://image.tmdb.org/t/p/w500{ep_r.get('still_path')}"
+        except Exception as e:
+            print(f"Error matching {f}: {e}")
 
-            except Exception as e:
-                print(f"TMDB lookup failed for {f}: {e}")
-
-            # --- ALWAYS SAVE (Even if search failed) ---
-            conn.execute('INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?)', 
-                         (fname_no_ext, cat, rel_path, t, p, b, d))
-            conn.commit()
-        
+        conn.execute('INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?)', 
+                     (fname_no_ext, cat, rel_path, t, p, b, d))
+        conn.commit()
         sync_status["current"] += 1
     
     conn.close()
@@ -267,5 +266,6 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
 
 
