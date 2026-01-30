@@ -198,20 +198,72 @@ BASE_HTML = """
 @app.route('/category/<cat>')
 def home(cat='movies'):
     conn = get_db()
-    rows = conn.execute('SELECT filename, path, title, poster FROM metadata WHERE category = ?', (cat,)).fetchall()
+    if cat == 'tv':
+        # Group by the first part of the title (The Series Name)
+        # We assume the title was saved as "Series - S01E01"
+        rows = conn.execute('''
+            SELECT DISTINCT 
+                REPLACE(SUBSTR(title, 1, INSTR(title, ' - S') - 1), '', title) as series_name,
+                poster, category 
+            FROM metadata 
+            WHERE category = 'tv' 
+            GROUP BY series_name
+        ''').fetchall()
+    else:
+        rows = conn.execute('SELECT filename, path, title, poster FROM metadata WHERE category = "movies"').fetchall()
     conn.close()
-    
-    if not rows:
-        return render_template_string(BASE_HTML, body_content="<h2>Library is empty. Click 'Sync Library' to scan your files!</h2>")
 
-    grid_class = "grid tv-grid" if cat == 'tv' else "grid"
-    card_class = "card tv-card" if cat == 'tv' else "card"
-    
-    grid_html = f'<div class="{grid_class}">'
+    if not rows:
+        return render_template_string(BASE_HTML, body_content="<h2>Library is empty. Click Sync!</h2>")
+
+    grid_html = '<div class="grid">'
     for r in rows:
-        grid_html += f'<a href="/play/{cat}/{r[1]}" class="{card_class}"><img src="{r[3]}"><div class="card-info"><span class="card-title">{r[2]}</span></div></a>'
+        if cat == 'tv':
+            # Link to a new route that shows seasons/episodes for this show
+            grid_html += f'''
+            <a href="/series/{r[0]}" class="card">
+                <img src="{r[1]}">
+                <div class="card-info"><span class="card-title">{r[0]}</span></div>
+            </a>'''
+        else:
+            grid_html += f'''
+            <a href="/play/movies/{r[1]}" class="card">
+                <img src="{r[3]}">
+                <div class="card-info"><span class="card-title">{r[2]}</span></div>
+            </a>'''
     grid_html += '</div>'
     return render_template_string(BASE_HTML, body_content=grid_html)
+
+@app.route('/series/<series_name>')
+def series_view(series_name):
+    conn = get_db()
+    # Find all episodes belonging to this series
+    episodes = conn.execute('SELECT filename, path, title, poster, desc FROM metadata WHERE title LIKE ?', (f"{series_name}%",)).fetchall()
+    conn.close()
+
+    # Group by Season
+    seasons = {}
+    for ep in episodes:
+        match = re.search(r'S(\d+)', ep[2])
+        s_num = match.group(1) if match else "00"
+        if s_num not in seasons: seasons[s_num] = []
+        seasons[s_num].append(ep)
+
+    content = f"<h1>{series_name}</h1>"
+    for s_num, eps in sorted(seasons.items()):
+        content += f"<h3>Season {s_num}</h3><div class='grid tv-grid'>"
+        for e in sorted(eps, key=lambda x: x[2]):
+            content += f'''
+            <a href="/play/tv/{e[1]}" class="card tv-card">
+                <img src="{e[3]}">
+                <div class="card-info">
+                    <span class="card-title">{e[2]}</span>
+                    <p class="card-desc">{e[4]}</p>
+                </div>
+            </a>'''
+        content += "</div><hr style='border: 1px solid #222; margin: 40px 0;'>"
+    
+    return render_template_string(BASE_HTML, body_content=content)
 
 @app.route('/sync')
 def sync():
@@ -266,6 +318,7 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
 
 
 
