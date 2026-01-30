@@ -21,45 +21,39 @@ def init_db():
     if not os.path.exists('/config'): os.makedirs('/config', exist_ok=True)
     conn = get_db()
     conn.execute('CREATE TABLE IF NOT EXISTS progress (filename TEXT PRIMARY KEY, seconds REAL)')
-    # Structure: filename, category, path, title, poster, backdrop, desc, series_title, season
+    # Added season_poster column
     conn.execute('''CREATE TABLE IF NOT EXISTS metadata 
                     (filename TEXT PRIMARY KEY, category TEXT, path TEXT, title TEXT, 
-                     poster TEXT, backdrop TEXT, desc TEXT, series_title TEXT, season INTEGER)''')
+                     poster TEXT, backdrop TEXT, desc TEXT, series_title TEXT, 
+                     season INTEGER, season_poster TEXT)''')
     conn.close()
 
 init_db()
 
 # --- HELPERS ---
-def clean_filename(name):
-    name = name.lower()
-    name = re.sub(r'\(.*?\)|\[.*?\]', '', name)
-    junk = [ r'1080p', r'720p', r'4k', r'2160p', r'bluray', r'bdrip', r'brrip', r'dvdrip', r'webrip', r'web-rip', r'hdtv', r'remux', r'sd', r'hd', r'480p', r'576p', r'web-dl', r'webdl', r'pdtv', r'x264', r'x265', r'h264', r'h265', r'hevc', r'10bit', r'avc', r'vc1', r'xvid', r'divx', r'aac', r'dts', r'dd5\.1', r'ac3', r'dts-hd', r'truehd', r'atmos', r'eac3', r'mp3', r'dual-audio', r'multi', r'dubbed', r'subbed', r'ddp5\.1', r'ddp2\.0', r'flac', r'opus', r'yify', r'yts', r'rarbg', r'psa', r'galaxyrg', r'tgx', r'evo', r'tigole', r'qxr', r'sartre', r'ion10', r'ettv', r'juggs', r'vppv', r'ozlem', r'nitro', r'amiable', r'megusta', r'amzn', r'netflix', r'nf', r'dnp', r'dsnp', r'hmax', r'hbo', r'atvp', r'apple tv', r'itunes', r'hulu', r'repack', r'proper', r'extended', r'unrated', r'directors cut', r'hc', r'korsub', r'sub', r'internal', r'limited', r'retail', r'hdr', r'dv', r'dovi', r'gaz' ]
-    for word in junk:
-        name = re.sub(fr'\b{word}\b', '', name)
-    if '-' in name:
-        parts = re.split(r'-(?=[^-]*$)', name)
-        if len(parts[0].strip()) > 2: name = parts[0]
-    name = re.sub(r'[\._-]', ' ', name)
-    name = re.sub(r'\b(19|20)\d{2}\b', '', name)
-    return re.sub(r'\s+', ' ', name).strip().title()
+
+def clean_filename(name): 
+    name = name.lower() 
+    name = re.sub(r'\(.*?\)|\[.*?\]', '', name) 
+    junk = [ r'1080p', r'720p', r'4k', r'2160p', r'bluray', r'bdrip', r'brrip', r'dvdrip', r'webrip', r'web-rip', r'hdtv', r'remux', r'sd', r'hd', r'480p', r'576p', r'web-dl', r'webdl', r'pdtv', r'x264', r'x265', r'h264', r'h265', r'hevc', r'10bit', r'avc', r'vc1', r'xvid', r'divx', r'aac', r'dts', r'dd5\.1', r'ac3', r'dts-hd', r'truehd', r'atmos', r'eac3', r'mp3', r'dual-audio', r'multi', r'dubbed', r'subbed', r'ddp5\.1', r'ddp2\.0', r'flac', r'opus', r'yify', r'yts', r'rarbg', r'psa', r'galaxyrg', r'tgx', r'evo', r'tigole', r'qxr', r'sartre', r'ion10', r'ettv', r'juggs', r'vppv', r'ozlem', r'nitro', r'amiable', r'megusta', r'amzn', r'netflix', r'nf', r'dnp', r'dsnp', r'hmax', r'hbo', r'atvp', r'apple tv', r'itunes', r'hulu', r'repack', r'proper', r'extended', r'unrated', r'directors cut', r'hc', r'korsub', r'sub', r'internal', r'limited', r'retail', r'hdr', r'dv', r'dovi', r'gaz' ] 
+    for word in junk: 
+        name = re.sub(fr'\b{word}\b', '', name) 
+        if '-' in name: parts = re.split(r'-(?=[^-]*$)', name) 
+            if len(parts[0].strip()) > 2: 
+                name = parts[0] name = re.sub(r'[\._-]', ' ', name) 
+                name = re.sub(r'\b(19|20)\d{2}\b', '', name) 
+return re.sub(r'\s+', ' ', name).strip().title()
 
 def extract_tv_info(filename):
-    # 1. Standard s00e00 notation
     standard = re.search(r'[sS](\d+)[eE](\d+)', filename)
     if standard:
         return int(standard.group(1)), int(standard.group(2))
-    
-    # 2. Date-based notation (YYYY-MM-DD or DD-MM-YYYY)
     date_match = re.search(r'(\d{4}[.\-\s]\d{2}[.\-\s]\d{2})|(\d{2}[.\-\s]\d{2}[.\-\s]\d{4})', filename)
     if date_match:
-        # For date-based, we return a hash or dummy episode ID to keep it unique
         return None, date_match.group(0) 
-
-    # 3. Multi-episode notation (s01e01-e02) -> identifies as the first episode
     multi = re.search(r'[sS](\d+)[eE](\d+)-[eE](\d+)', filename)
     if multi:
         return int(multi.group(1)), int(multi.group(2))
-
     return None, None
 
 def sync_worker():
@@ -84,54 +78,53 @@ def sync_worker():
         rel_path = os.path.relpath(os.path.join(root, f), base_path)
         path_parts = rel_path.split(os.sep)
 
-        # 1. Identify Show and Season from FOLDERS
-        # Expecting: ShowName/Season 01/Episode.mkv
-        series_folder_name = path_parts[0] if len(path_parts) > 1 else "Unsorted"
-        
-        # Determine Season Number from folder name
-        s_num = 1 # Default
+        series_folder = path_parts[0] if len(path_parts) > 1 else "Unsorted"
+        s_num = 1
         if len(path_parts) > 2:
-            season_folder = path_parts[1].lower()
-            if "special" in season_folder:
-                s_num = 0
-            else:
-                s_match = re.search(r'(\d+)', season_folder)
-                s_num = int(s_match.group(1)) if s_match else 1
+            s_match = re.search(r'(\d+)', path_parts[1])
+            s_num = int(s_match.group(1)) if s_match else 1
+            if "special" in path_parts[1].lower(): s_num = 0
 
-        # 2. Metadata Lookup
-        series_title = series_folder_name
+        series_title = series_folder
         display_title = fname_no_ext
-        poster, desc = f"https://via.placeholder.com/500x750?text={series_title}", ""
+        main_poster = f"https://via.placeholder.com/500x750?text={series_title}"
+        season_poster = main_poster
+        desc = ""
 
         try:
-            # Search TMDB using the FOLDER name
             search_type = "tv" if cat == "tv" else "movie"
-            r = requests.get(f"https://api.themoviedb.org/3/search/{search_type}?query={series_folder_name}", headers=headers).json()
+            r = requests.get(f"https://api.themoviedb.org/3/search/{search_type}?query={series_folder}", headers=headers).json()
             
             if r.get('results'):
                 res = r['results'][0]
-                tmdb_id = res['id']
+                tid = res['id']
                 series_title = res.get('name') or res.get('title')
-                poster = f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}"
+                main_poster = f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}"
                 
-                # Try to get Episode-specific data
                 if cat == "tv":
+                    # Get Season Poster
+                    s_r = requests.get(f"https://api.themoviedb.org/3/tv/{tid}/season/{s_num}", headers=headers).json()
+                    if s_r.get('poster_path'):
+                        season_poster = f"https://image.tmdb.org/t/p/w500{s_r.get('poster_path')}"
+
+                    # Get Episode Detail & Format Title
                     s_idx, e_idx = extract_tv_info(f)
                     if s_idx is not None:
-                        ep_r = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{s_idx}/episode/{e_idx}", headers=headers).json()
+                        ep_r = requests.get(f"https://api.themoviedb.org/3/tv/{tid}/season/{s_idx}/episode/{e_idx}", headers=headers).json()
                         if 'id' in ep_r:
-                            display_title = f"S{s_idx:02d}E{e_idx:02d} - {ep_r.get('name')}"
+                            display_title = f"{series_title} - S{s_idx:02d}E{e_idx:02d} - {ep_r.get('name')}"
                             desc = ep_r.get('overview')
-                            # For episodes, use the 'still_path' as the thumbnail if available
                             if ep_r.get('still_path'):
-                                poster = f"https://image.tmdb.org/t/p/w500{ep_r.get('still_path')}"
-                    elif isinstance(e_idx, str): # Date-based
-                        display_title = f"{e_idx} - {series_title}"
-        except:
-            pass
+                                main_poster = f"https://image.tmdb.org/t/p/w500{ep_r.get('still_path')}"
+                            else:
+                                main_poster = season_poster
+                        else:
+                            display_title = f"{series_title} - S{s_idx:02d}E{e_idx:02d}"
+                            main_poster = season_poster
+        except: pass
 
-        conn.execute('INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', 
-                    (fname_no_ext, cat, rel_path, display_title, poster, "", desc, series_title, s_num))
+        conn.execute('INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', 
+                    (fname_no_ext, cat, rel_path, display_title, main_poster, "", desc, series_title, s_num, season_poster))
         conn.commit()
         sync_status["current"] += 1
     
@@ -162,15 +155,8 @@ BASE_HTML = """
         .tv-card img { aspect-ratio: 16/9; }
         .card-info { padding: 10px; }
         .card-title { font-weight: bold; font-size: 0.85rem; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .card-desc { font-size: 0.75rem; color: #999; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 5px; }
         h1 { margin-bottom: 30px; }
         .back-btn { display: inline-block; margin-bottom: 20px; color: var(--primary); text-decoration: none; font-size: 0.9rem; }
-        .season-folder:hover {
-            border-color: #007bff !important;
-            background: #222 !important;
-            transform: scale(1.05);
-            transition: 0.2s;
-    }
     </style>
 </head>
 <body>
@@ -199,6 +185,15 @@ BASE_HTML = """
             }, 1000);
         }
         checkProgress();
+
+        // Live Update Logic
+        let lastCount = 0;
+        setInterval(() => {
+            fetch('/api/count').then(r => r.json()).then(data => {
+                if (lastCount > 0 && data.count > lastCount) { location.reload(); }
+                lastCount = data.count;
+            });
+        }, 5000);
     </script>
 </body>
 </html>
@@ -209,13 +204,7 @@ BASE_HTML = """
 def home(cat='movies'):
     conn = get_db()
     if cat == 'tv':
-        # GROUP BY series_title ensures only ONE card per show
-        rows = conn.execute('''
-            SELECT series_title, MAX(poster) 
-            FROM metadata 
-            WHERE category="tv" 
-            GROUP BY series_title
-        ''').fetchall()
+        rows = conn.execute('SELECT series_title, MAX(poster) FROM metadata WHERE category="tv" GROUP BY series_title').fetchall()
     else:
         rows = conn.execute('SELECT filename, path, title, poster FROM metadata WHERE category="movies"').fetchall()
     conn.close()
@@ -223,7 +212,6 @@ def home(cat='movies'):
     grid_html = '<div class="grid">'
     for r in rows:
         if cat == 'tv':
-            # r[0] is the Series Title (Brooklyn Nine-Nine)
             grid_html += f'''
             <a href="/series/{r[0]}" class="card">
                 <img src="{r[1]}" onerror="this.src='https://via.placeholder.com/500x750?text={r[0]}'">
@@ -231,7 +219,7 @@ def home(cat='movies'):
             </a>'''
         else:
             grid_html += f'''
-            <a href="/play/movies/{r[0]}" class="card">
+            <a href="/play/movies/{r[1]}" class="card">
                 <img src="{r[3]}" onerror="this.src='https://via.placeholder.com/500x750?text=Movie'">
                 <div class="card-info"><span class="card-title">{r[2]}</span></div>
             </a>'''
@@ -240,28 +228,23 @@ def home(cat='movies'):
 @app.route('/series/<path:series_name>')
 def series_view(series_name):
     conn = get_db()
-    # Get distinct seasons for this specific series_title
-    seasons = conn.execute('SELECT DISTINCT season FROM metadata WHERE series_title = ? ORDER BY season ASC', (series_name,)).fetchall()
+    seasons = conn.execute('SELECT season, MAX(season_poster) FROM metadata WHERE series_title = ? GROUP BY season ORDER BY season ASC', (series_name,)).fetchall()
     conn.close()
     
-    html = f'<a href="/category/tv" class="back-btn">← Back</a><h1>{series_name}</h1>'
-    html += '<div class="grid">'
-    for s in seasons:
-        s_val = s[0]
-        label = "Specials" if s_val == 0 else f"Season {s_val}"
+    html = f'<a href="/category/tv" class="back-btn">← Back</a><h1>{series_name}</h1><div class="grid">'
+    for s_num, s_poster in seasons:
+        label = "Specials" if s_num == 0 else f"Season {s_num}"
         html += f'''
-        <a href="/series/{series_name}/season/{s_val}" class="card">
-            <div class="season-folder" style="aspect-ratio:2/3; background:#1a1a1a; display:flex; flex-direction:column; align-items:center; justify-content:center; border:2px solid #333; border-radius:10px;">
-                <span style="font-size:4rem;">📂</span>
-                <span style="margin-top:15px; font-weight:bold;">{label}</span>
-            </div>
+        <a href="/series/{series_name}/season/{s_num}" class="card">
+            <img src="{s_poster}" onerror="this.src='https://via.placeholder.com/500x750?text={label}'">
+            <div class="card-info"><span class="card-title">{label}</span></div>
         </a>'''
     return render_template_string(BASE_HTML, body_content=html + '</div>')
 
 @app.route('/series/<path:series_name>/season/<int:s_num>')
 def season_view(series_name, s_num):
     conn = get_db()
-    eps = conn.execute('SELECT filename, path, title, poster, desc FROM metadata WHERE series_title = ? AND season = ? AND category = "tv"', (series_name, s_num)).fetchall()
+    eps = conn.execute('SELECT filename, path, title, poster FROM metadata WHERE series_title = ? AND season = ? AND category = "tv"', (series_name, s_num)).fetchall()
     conn.close()
     
     html = f'<a href="/series/{series_name}" class="back-btn">← Back to Seasons</a><h1>{series_name} - Season {s_num}</h1>'
@@ -270,12 +253,18 @@ def season_view(series_name, s_num):
         html += f'''
         <a href="/play/tv/{e[1]}" class="card tv-card">
             <img src="{e[3]}" onerror="this.src='https://via.placeholder.com/500x280?text=Episode'">
-            <div class="card-info">
-                <span class="card-title">{e[2]}</span>
-            </div>
+            <div class="card-info"><span class="card-title">{e[2]}</span></div>
         </a>'''
     return render_template_string(BASE_HTML, body_content=html + '</div>')
-    
+
+@app.route('/api/count')
+def get_count():
+    conn = get_db()
+    count = conn.execute('SELECT COUNT(*) FROM metadata').fetchone()[0]
+    conn.close()
+    return jsonify(count=count)
+
+# (Keeping /sync, /sync_progress, /play, /save_progress, /stream routes as they were)
 @app.route('/sync')
 def sync():
     if not sync_status["active"]:
@@ -329,9 +318,3 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
-
-
-
-
-
-
