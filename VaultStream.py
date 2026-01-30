@@ -44,11 +44,22 @@ def clean_filename(name):
     return re.sub(r'\s+', ' ', name).strip().title()
 
 def extract_tv_info(filename):
-    match = re.search(r'[sS](\d+)[eE](\d+)|(\d+)x(\d+)', filename)
-    if match:
-        s = int(match.group(1) or match.group(3))
-        e = int(match.group(2) or match.group(4))
-        return s, e
+    # 1. Standard s00e00 notation
+    standard = re.search(r'[sS](\d+)[eE](\d+)', filename)
+    if standard:
+        return int(standard.group(1)), int(standard.group(2))
+    
+    # 2. Date-based notation (YYYY-MM-DD or DD-MM-YYYY)
+    date_match = re.search(r'(\d{4}[.\-\s]\d{2}[.\-\s]\d{2})|(\d{2}[.\-\s]\d{2}[.\-\s]\d{4})', filename)
+    if date_match:
+        # For date-based, we return a hash or dummy episode ID to keep it unique
+        return None, date_match.group(0) 
+
+    # 3. Multi-episode notation (s01e01-e02) -> identifies as the first episode
+    multi = re.search(r'[sS](\d+)[eE](\d+)-[eE](\d+)', filename)
+    if multi:
+        return int(multi.group(1)), int(multi.group(2))
+
     return None, None
 
 def sync_worker():
@@ -57,12 +68,11 @@ def sync_worker():
     sync_status["current"] = 0
     all_files = []
     
-    # Corrected file gathering logic
     for cat, base_path in PATHS.items():
         if os.path.exists(base_path):
             for root, _, files in os.walk(base_path):
                 for f in files:
-                    if f.lower().endswith(('.mp4', '.mkv', '.webm')):
+                    if f.lower().endswith(('.mp4', '.mkv', '.webm', '.avi')):
                         all_files.append((cat, base_path, root, f))
     
     sync_status["total"] = len(all_files)
@@ -72,48 +82,56 @@ def sync_worker():
     for cat, base_path, root, f in all_files:
         fname_no_ext = os.path.splitext(f)[0]
         rel_path = os.path.relpath(os.path.join(root, f), base_path)
-        
-        if conn.execute('SELECT 1 FROM metadata WHERE filename = ?', (fname_no_ext,)).fetchone():
-            sync_status["current"] += 1
-            continue
+        path_parts = rel_path.split(os.sep)
 
-        clean_name = clean_filename(fname_no_ext)
-        season, episode = extract_tv_info(f)
+        # 1. Identify Show and Season from FOLDERS
+        # Expecting: ShowName/Season 01/Episode.mkv
+        series_folder_name = path_parts[0] if len(path_parts) > 1 else "Unsorted"
         
-        # 'series_title' MUST be the clean name (e.g. Brooklyn Nine Nine) 
-        # NOT the episode name.
-        series_title = clean_name
-        display_title = clean_name
-        p, b, d = f"https://via.placeholder.com/500x750?text={clean_name}", "", ""
-        s_num = season if season is not None else 1
+        # Determine Season Number from folder name
+        s_num = 1 # Default
+        if len(path_parts) > 2:
+            season_folder = path_parts[1].lower()
+            if "special" in season_folder:
+                s_num = 0
+            else:
+                s_match = re.search(r'(\d+)', season_folder)
+                s_num = int(s_match.group(1)) if s_match else 1
+
+        # 2. Metadata Lookup
+        series_title = series_folder_name
+        display_title = fname_no_ext
+        poster, desc = f"https://via.placeholder.com/500x750?text={series_title}", ""
 
         try:
+            # Search TMDB using the FOLDER name
             search_type = "tv" if cat == "tv" else "movie"
-            r = requests.get(f"https://api.themoviedb.org/3/search/{search_type}?query={clean_name}", headers=headers, timeout=5).json()
+            r = requests.get(f"https://api.themoviedb.org/3/search/{search_type}?query={series_folder_name}", headers=headers).json()
             
             if r.get('results'):
                 res = r['results'][0]
                 tmdb_id = res['id']
-                # THIS IS THE KEY: series_title is ALWAYS the show name
                 series_title = res.get('name') or res.get('title')
-                display_title = series_title
-                p = f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}"
-                d = res.get('overview')
+                poster = f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}"
+                
+                # Try to get Episode-specific data
+                if cat == "tv":
+                    s_idx, e_idx = extract_tv_info(f)
+                    if s_idx is not None:
+                        ep_r = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{s_idx}/episode/{e_idx}", headers=headers).json()
+                        if 'id' in ep_r:
+                            display_title = f"S{s_idx:02d}E{e_idx:02d} - {ep_r.get('name')}"
+                            desc = ep_r.get('overview')
+                            # For episodes, use the 'still_path' as the thumbnail if available
+                            if ep_r.get('still_path'):
+                                poster = f"https://image.tmdb.org/t/p/w500{ep_r.get('still_path')}"
+                    elif isinstance(e_idx, str): # Date-based
+                        display_title = f"{e_idx} - {series_title}"
+        except:
+            pass
 
-                if cat == "tv" and season is not None:
-                    ep_r = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season}/episode/{episode}", headers=headers, timeout=5).json()
-                    if 'id' in ep_r:
-                        # Only the 'display_title' gets the S01E01 suffix
-                        display_title = f"{series_title} - S{season:02d}E{episode:02d}: {ep_r.get('name')}"
-                        d = ep_r.get('overview') or d
-                        # Keep the show poster for the main card, use episode still for the episode card
-                        ep_poster = f"https://image.tmdb.org/t/p/w500{ep_r.get('still_path')}" if ep_r.get('still_path') else p
-        except: pass
-
-        # Save to DB
-        # We save the show's main poster for the show/season views, but we use display_title for the specific episode
         conn.execute('INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', 
-                    (fname_no_ext, cat, rel_path, display_title, p, b, d, series_title, s_num))
+                    (fname_no_ext, cat, rel_path, display_title, poster, "", desc, series_title, s_num))
         conn.commit()
         sync_status["current"] += 1
     
@@ -222,16 +240,17 @@ def home(cat='movies'):
 @app.route('/series/<path:series_name>')
 def series_view(series_name):
     conn = get_db()
-    # Find all seasons for this show
-    seasons = conn.execute('SELECT DISTINCT season FROM metadata WHERE series_title = ? AND category = "tv"', (series_name,)).fetchall()
+    # Get distinct seasons for this specific series_title
+    seasons = conn.execute('SELECT DISTINCT season FROM metadata WHERE series_title = ? ORDER BY season ASC', (series_name,)).fetchall()
     conn.close()
     
-    html = f'<a href="/category/tv" class="back-btn">← Back to TV Shows</a><h1>{series_name}</h1>'
+    html = f'<a href="/category/tv" class="back-btn">← Back</a><h1>{series_name}</h1>'
     html += '<div class="grid">'
-    for s in sorted([row[0] for row in seasons]):
-        label = "Specials" if s == 0 else f"Season {s}"
+    for s in seasons:
+        s_val = s[0]
+        label = "Specials" if s_val == 0 else f"Season {s_val}"
         html += f'''
-        <a href="/series/{series_name}/season/{s}" class="card">
+        <a href="/series/{series_name}/season/{s_val}" class="card">
             <div class="season-folder" style="aspect-ratio:2/3; background:#1a1a1a; display:flex; flex-direction:column; align-items:center; justify-content:center; border:2px solid #333; border-radius:10px;">
                 <span style="font-size:4rem;">📂</span>
                 <span style="margin-top:15px; font-weight:bold;">{label}</span>
@@ -310,6 +329,7 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
 
 
 
