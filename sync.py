@@ -53,15 +53,27 @@ def sync_worker(status_dict):
         season_poster = main_poster
         desc = ""
 
+       # Identify Year and Clean Name
+        search_year = extract_year(series_folder)
+        search_query = clean_filename(series_folder)
+        
         try:
-            search_type = "tv" if cat == "tv" else "movie"
-            url = f"https://api.themoviedb.org/3/search/{search_type}?query={search_query}"
-            if search_year:
-                url += f"&year={search_year}" if cat == "movie" else f"&first_air_date_year={search_year}"
-            
+            if cat == "movie":
+                url = f"https://api.themoviedb.org/3/search/movie?query={search_query}"
+                if search_year:
+                    url += f"&primary_release_year={search_year}"
+            else: # TV
+                url = f"https://api.themoviedb.org/3/search/tv?query={search_query}"
+                if search_year:
+                    url += f"&first_air_date_year={search_year}"
+
             r = requests.get(url, headers=headers).json()
             
             if r.get('results'):
+                # Sort results by popularity to avoid obscure matches
+                results = sorted(r['results'], key=lambda x: x.get('popularity', 0), reverse=True)
+                res = results[0]
+                # ... (rest of your metadata assignment logic)
                 # We take the first result, which is much more likely to be correct now
                 res = r['results'][0]
                 tid = res['id']
