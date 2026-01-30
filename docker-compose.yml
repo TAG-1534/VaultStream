@@ -1,0 +1,10 @@
+version: '3.8'
+services:
+  vaultstream-app:
+    build: .
+    container_name: VaultStream-Service
+    ports:
+      - "5005:5000"
+    volumes:
+      - /mnt/prox-share/ProxMox/PlexJF/Movies:/movies
+    restart: unless-stopped
