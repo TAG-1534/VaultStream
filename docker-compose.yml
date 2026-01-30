@@ -2,9 +2,12 @@ version: '3.8'
 services:
   vaultstream-app:
     build: .
-    container_name: VaultStream-Service
+    container_name: VaultStream
     ports:
       - "5005:5000"
     volumes:
+      - /home/retfirds/vaultstream_config:/config
       - /mnt/prox-share/ProxMox/PlexJF/Movies:/movies
+      - /mnt/prox-share/ProxMox/PlexJF/TV:/tv
+      - /mnt/prox-share/ProxMox/PlexJF/Music:/music
     restart: unless-stopped

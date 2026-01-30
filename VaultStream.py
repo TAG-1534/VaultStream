@@ -2,54 +2,85 @@ import os
 from flask import Flask, render_template_string, send_from_directory
 
 app = Flask(__name__)
-MOVIES_DIR = '/movies'
 
-# Premium VaultStream UI
-HTML_TEMPLATE = """
+# These match the volumes in your docker-compose.yml
+PATHS = {
+    'movies': '/movies',
+    'tv': '/tv',
+    'music': '/music'
+}
+
+BASE_HTML = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VaultStream | Private Collection</title>
+    <title>VaultStream</title>
     <style>
-        body { background-color: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', Roboto, Helvetica, sans-serif; margin: 0; padding: 40px; }
-        header { border-bottom: 2px solid #333; margin-bottom: 30px; padding-bottom: 10px; }
-        h1 { color: #ffffff; font-size: 2.5rem; letter-spacing: 2px; text-transform: uppercase; margin: 0; }
-        span.brand { color: #007bff; } /* A subtle blue 'Vault' accent */
-        .movie-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 30px; }
-        .vault-card { background: #1a1a1a; border: 1px solid #333; border-radius: 12px; overflow: hidden; transition: all 0.3s ease; }
-        .vault-card:hover { transform: translateY(-10px); border-color: #007bff; box-shadow: 0 10px 20px rgba(0,0,0,0.5); }
-        video { width: 100%; display: block; background: #000; }
-        .metadata { padding: 15px; background: #1a1a1a; font-size: 0.9rem; font-weight: 500; text-align: center; }
+        :root { --primary: #007bff; --bg: #0a0a0a; --card-bg: #1a1a1a; --text: #e0e0e0; }
+        body { background: var(--bg); color: var(--text); font-family: 'Helvetica Neue', Arial, sans-serif; margin: 0; }
+        nav { background: rgba(0,0,0,0.9); padding: 15px 40px; display: flex; align-items: center; position: sticky; top: 0; z-index: 100; border-bottom: 1px solid #333; }
+        .logo { color: white; font-size: 1.8rem; font-weight: bold; text-decoration: none; margin-right: 40px; }
+        .logo span { color: var(--primary); }
+        .nav-links a { color: #bbb; text-decoration: none; margin-right: 25px; font-weight: 500; transition: 0.3s; }
+        .nav-links a:hover { color: white; }
+        .active { color: white !important; border-bottom: 2px solid var(--primary); padding-bottom: 5px; }
+        .container { padding: 40px; }
+        h2 { margin-bottom: 20px; font-size: 1.5rem; text-transform: uppercase; letter-spacing: 1px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 25px; }
+        .card { background: var(--card-bg); border-radius: 8px; overflow: hidden; transition: 0.3s; border: 1px solid #222; }
+        .card:hover { transform: scale(1.03); border-color: var(--primary); }
+        video, audio { width: 100%; background: #000; display: block; }
+        .info { padding: 15px; text-align: center; font-size: 0.9rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     </style>
 </head>
 <body>
-    <header>
-        <h1>Vault<span class="brand">Stream</span></h1>
-    </header>
-    <div class="movie-grid">
-        {% for movie in movies %}
-        <div class="vault-card">
-            <video controls preload="metadata">
-                <source src="/stream/{{ movie }}" type="video/mp4">
-            </video>
-            <div class="metadata">{{ movie }}</div>
+    <nav>
+        <a href="/" class="logo">Vault<span>Stream</span></a>
+        <div class="nav-links">
+            <a href="/" class="{{ 'active' if page == 'home' }}">Home</a>
+            <a href="/movies" class="{{ 'active' if page == 'movies' }}">Movies</a>
+            <a href="/tv" class="{{ 'active' if page == 'tv' }}">TV Shows</a>
+            <a href="/music" class="{{ 'active' if page == 'music' }}">Music</a>
         </div>
-        {% endfor %}
+    </nav>
+    <div class="container">
+        {{ content | safe }}
     </div>
 </body>
 </html>
 """
 
-@app.route('/')
-def index():
-    files = [f for f in os.listdir(MOVIES_DIR) if f.endswith(('.mp4', '.mkv', '.webm'))]
-    return render_template_string(HTML_TEMPLATE, movies=files)
+def get_files(path, extensions):
+    if not os.path.exists(path): return []
+    return sorted([f for f in os.listdir(path) if f.endswith(extensions)])
 
-@app.route('/stream/<path:filename>')
-def stream_video(filename):
-    return send_from_directory(MOVIES_DIR, filename)
+@app.route('/')
+def home():
+    content = "<h2>Featured</h2><p>Welcome to VaultStream. Your library is ready.</p>"
+    return render_template_string(BASE_HTML, content=content, page='home')
+
+@app.route('/movies')
+def movies_page():
+    files = get_files(PATHS['movies'], ('.mp4', '.mkv', '.webm'))
+    cards = "".join([f'<div class="card"><video controls preload="metadata"><source src="/stream/movies/{f}"></video><div class="info">{f}</div></div>' for f in files])
+    return render_template_string(BASE_HTML, content=f"<h2>Movies</h2><div class='grid'>{cards}</div>", page='movies')
+
+@app.route('/tv')
+def tv_page():
+    files = get_files(PATHS['tv'], ('.mp4', '.mkv', '.webm'))
+    cards = "".join([f'<div class="card"><video controls preload="metadata"><source src="/stream/tv/{f}"></video><div class="info">{f}</div></div>' for f in files])
+    return render_template_string(BASE_HTML, content=f"<h2>TV Shows</h2><div class='grid'>{cards}</div>", page='tv')
+
+@app.route('/music')
+def music_page():
+    files = get_files(PATHS['music'], ('.mp3', '.wav', '.flac'))
+    cards = "".join([f'<div class="card"><audio controls><source src="/stream/music/{f}"></audio><div class="info">{f}</div></div>' for f in files])
+    return render_template_string(BASE_HTML, content=f"<h2>Music</h2><div class='grid'>{cards}</div>", page='music')
+
+@app.route('/stream/<category>/<path:filename>')
+def stream(category, filename):
+    return send_from_directory(PATHS.get(category), filename)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, threaded=True)
