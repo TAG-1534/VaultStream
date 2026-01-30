@@ -29,11 +29,34 @@ init_db()
 
 # --- HELPERS ---
 def clean_filename(name):
+    # 1. Remove content inside brackets/parens (e.g., [Group-Name])
     name = re.sub(r'\(.*?\)|\[.*?\]', '', name.lower())
-    junk = [r'1080p', r'720p', r'4k', r'2160p', r'bluray', r'bdrip', r'brrip', r'x264', r'x265', r'h264', r'hevc', r'webrip', r'web-rip', r'dvdrip', 'yify','aac', 'amzn','webrip','1x264-galaxyrg']
-    for word in junk: name = re.sub(fr'\b{word}\b', '', name)
+    
+    # 2. Your expanded junk list
+    junk = [
+        r'1080p', r'720p', r'4k', r'2160p', r'bluray', r'bdrip', r'brrip', r'dvdrip', r'webrip', r'web-rip', r'hdtv', r'remux', r'sd', r'hd', r'480p', r'576p', r'web-dl', r'webdl', r'pdtv',
+        r'x264', r'x265', r'h264', r'h265', r'hevc', r'10bit', r'avc', r'vc1', r'xvid', r'divx',
+        r'aac', r'dts', r'dd5\.1', r'ac3', r'dts-hd', r'truehd', r'atmos', r'eac3', r'mp3', r'dual-audio', r'multi', r'dubbed', r'subbed', r'ddp5\.1', r'ddp2\.0', r'flac', r'opus',
+        r'yify', r'yts', r'rarbg', r'psa', r'galaxyrg', r'tgx', r'evo', r'tigole', r'qxr', r'sartre', r'ion10', r'ettv', r'juggs', r'vppv', r'ozlem', r'nitro', r'amiable', r'megusta',
+        r'amzn', r'netflix', r'nf', r'dnp', r'dsnp', r'hmax', r'hbo', r'atvp', r'apple tv', r'itunes', r'hulu',
+        r'repack', r'proper', r'extended', r'unrated', r'directors cut', r'hc', r'korsub', r'sub', r'internal', r'limited', r'retail', r'hdr', r'dv', r'dovi'
+    ]
+    
+    # Fix: Ensure the substitution is inside the loop
+    for word in junk:
+        name = re.sub(fr'\b{word}\b', '', name)
+
+    # 3. Handle the dash split (Release group suffix)
+    # Only split if there is a dash and it's not the ONLY character
+    if '-' in name:
+        parts = re.split(r'-(?=[^-]*$)', name)
+        if len(parts[0].strip()) > 2: # Don't strip if it leaves a 1-2 char string
+            name = parts[0]
+
+    # 4. Final Cleanup
     name = re.sub(r'[\._-]', ' ', name)
-    name = re.sub(r'\b(19|20)\d{2}\b', '', name)
+    name = re.sub(r'\b(19|20)\d{2}\b', '', name) # Remove years
+    
     return re.sub(r'\s+', ' ', name).strip().title()
 
 def extract_tv_info(filename):
@@ -247,6 +270,7 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
 
 
 
