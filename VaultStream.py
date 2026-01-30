@@ -181,39 +181,74 @@ BASE_HTML = """
 def home(cat='movies'):
     conn = get_db()
     if cat == 'tv':
-        rows = conn.execute("SELECT DISTINCT REPLACE(SUBSTR(title, 1, INSTR(title, ' - S') - 1), '', title) as series_name, poster FROM metadata WHERE category = 'tv' GROUP BY series_name").fetchall()
+        # Improved SQL: It tries to find ' - S', but if it can't, it just uses the full title.
+        rows = conn.execute('''
+            SELECT DISTINCT 
+                CASE 
+                    WHEN INSTR(title, ' - S') > 0 THEN SUBSTR(title, 1, INSTR(title, ' - S') - 1)
+                    ELSE title 
+                END as series_name,
+                poster 
+            FROM metadata 
+            WHERE category = 'tv' 
+            GROUP BY series_name
+        ''').fetchall()
     else:
         rows = conn.execute('SELECT filename, path, title, poster FROM metadata WHERE category = "movies"').fetchall()
     conn.close()
-    
-    if not rows: return render_template_string(BASE_HTML, body_content="<h2>Library empty. Click Sync.</h2>")
+
+    if not rows:
+        return render_template_string(BASE_HTML, body_content="<h2>Library is empty. Click Sync!</h2>")
 
     grid_html = '<div class="grid">'
     for r in rows:
         if cat == 'tv':
-            grid_html += f'<a href="/series/{r[0]}" class="card"><img src="{r[1]}"><div class="card-info"><span class="card-title">{r[0]}</span></div></a>'
+            # We use r[0] (Series Name) and r[1] (Poster)
+            grid_html += f'''
+            <a href="/series/{r[0]}" class="card">
+                <img src="{r[1]}" onerror="this.src='https://via.placeholder.com/500x750?text=No+Poster'">
+                <div class="card-info"><span class="card-title">{r[0]}</span></div>
+            </a>'''
         else:
-            grid_html += f'<a href="/play/movies/{r[1]}" class="card"><img src="{r[3]}"><div class="card-info"><span class="card-title">{r[2]}</span></div></a>'
-    return render_template_string(BASE_HTML, body_content=grid_html + '</div>')
-
-@app.route('/series/<name>')
-def series_view(name):
+            grid_html += f'''
+            <a href="/play/movies/{r[1]}" class="card">
+                <img src="{r[3]}" onerror="this.src='https://via.placeholder.com/500x750?text=No+Poster'">
+                <div class="card-info"><span class="card-title">{r[2]}</span></div>
+            </a>'''
+    grid_html += '</div>'
+    return render_template_string(BASE_HTML, body_content=grid_html)
+    
+@app.route('/series/<path:series_name>') # Added <path:> to handle spaces/dots in names
+def series_view(series_name):
     conn = get_db()
-    eps = conn.execute('SELECT filename, path, title, poster, desc FROM metadata WHERE title LIKE ?', (f"{name}%",)).fetchall()
+    # Use a more flexible LIKE query to find episodes
+    eps = conn.execute('SELECT filename, path, title, poster, desc FROM metadata WHERE title LIKE ? AND category = "tv"', (f"{series_name}%",)).fetchall()
     conn.close()
     
+    if not eps:
+        return f"<h1>No episodes found for {series_name}</h1><a href='/category/tv'>Back</a>"
+
     seasons = {}
     for e in eps:
-        match = re.search(r'S(\d+)', e[2])
+        # Better season extraction
+        match = re.search(r'[sS](\d+)', e[2])
         s_num = match.group(1) if match else "01"
         if s_num not in seasons: seasons[s_num] = []
         seasons[s_num].append(e)
 
-    html = f'<a href="/category/tv" class="back-btn">← Back to TV Shows</a><h1>{name}</h1>'
+    html = f'<a href="/category/tv" class="back-btn">← Back to TV Shows</a><h1>{series_name}</h1>'
     for s, e_list in sorted(seasons.items()):
         html += f'<h3>Season {s}</h3><div class="grid tv-grid">'
+        # Sort episodes by title so S01E01 comes before S01E02
         for e in sorted(e_list, key=lambda x: x[2]):
-            html += f'<a href="/play/tv/{e[1]}" class="card tv-card"><img src="{e[3]}"><div class="card-info"><span class="card-title">{e[2]}</span><p class="card-desc">{e[4]}</p></div></a>'
+            html += f'''
+            <a href="/play/tv/{e[1]}" class="card tv-card">
+                <img src="{e[3]}" onerror="this.src='https://via.placeholder.com/500x280?text=Episode+Still'">
+                <div class="card-info">
+                    <span class="card-title">{e[2]}</span>
+                    <p class="card-desc">{e[4]}</p>
+                </div>
+            </a>'''
         html += '</div><br><hr style="border:0; border-top:1px solid #222"><br>'
     return render_template_string(BASE_HTML, body_content=html)
 
@@ -270,6 +305,7 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
 
 
 
