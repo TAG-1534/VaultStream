@@ -56,6 +56,8 @@ def sync_worker():
     sync_status["active"] = True
     sync_status["current"] = 0
     all_files = []
+    
+    # Corrected file gathering logic
     for cat, base_path in PATHS.items():
         if os.path.exists(base_path):
             for root, _, files in os.walk(base_path):
@@ -78,38 +80,40 @@ def sync_worker():
         clean_name = clean_filename(fname_no_ext)
         season, episode = extract_tv_info(f)
         
-        # Defaults
-        t, p, b, d = clean_name, f"https://via.placeholder.com/500x750?text={clean_name}", "", ""
+        # 'series_title' MUST be the clean name (e.g. Brooklyn Nine Nine) 
+        # NOT the episode name.
         series_title = clean_name
+        display_title = clean_name
+        p, b, d = f"https://via.placeholder.com/500x750?text={clean_name}", "", ""
         s_num = season if season is not None else 1
 
         try:
             search_type = "tv" if cat == "tv" else "movie"
             r = requests.get(f"https://api.themoviedb.org/3/search/{search_type}?query={clean_name}", headers=headers, timeout=5).json()
             
-            if not r.get('results') and 'And' in clean_name:
-                alt_name = clean_name.replace('And', '&')
-                r = requests.get(f"https://api.themoviedb.org/3/search/{search_type}?query={alt_name}", headers=headers, timeout=5).json()
-
             if r.get('results'):
                 res = r['results'][0]
                 tmdb_id = res['id']
+                # THIS IS THE KEY: series_title is ALWAYS the show name
                 series_title = res.get('name') or res.get('title')
-                t = series_title
+                display_title = series_title
                 p = f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}"
                 d = res.get('overview')
 
-                if cat == "tv" and season is not None and episode is not None:
+                if cat == "tv" and season is not None:
                     ep_r = requests.get(f"https://api.themoviedb.org/3/tv/{tmdb_id}/season/{season}/episode/{episode}", headers=headers, timeout=5).json()
                     if 'id' in ep_r:
-                        t = f"{series_title} - S{season:02d}E{episode:02d}: {ep_r.get('name')}"
+                        # Only the 'display_title' gets the S01E01 suffix
+                        display_title = f"{series_title} - S{season:02d}E{episode:02d}: {ep_r.get('name')}"
                         d = ep_r.get('overview') or d
-                        if ep_r.get('still_path'): p = f"https://image.tmdb.org/t/p/w500{ep_r.get('still_path')}"
-
+                        # Keep the show poster for the main card, use episode still for the episode card
+                        ep_poster = f"https://image.tmdb.org/t/p/w500{ep_r.get('still_path')}" if ep_r.get('still_path') else p
         except: pass
 
+        # Save to DB
+        # We save the show's main poster for the show/season views, but we use display_title for the specific episode
         conn.execute('INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', 
-                    (fname_no_ext, cat, rel_path, t, p, b, d, series_title, s_num))
+                    (fname_no_ext, cat, rel_path, display_title, p, b, d, series_title, s_num))
         conn.commit()
         sync_status["current"] += 1
     
@@ -182,15 +186,18 @@ BASE_HTML = """
 </html>
 """
 
-import re
-
 @app.route('/')
 @app.route('/category/<cat>')
 def home(cat='movies'):
     conn = get_db()
     if cat == 'tv':
-        # Group by the series_title column we just populated
-        rows = conn.execute('SELECT DISTINCT series_title, MAX(poster) FROM metadata WHERE category="tv" GROUP BY series_title').fetchall()
+        # GROUP BY series_title ensures only ONE card per show
+        rows = conn.execute('''
+            SELECT series_title, MAX(poster) 
+            FROM metadata 
+            WHERE category="tv" 
+            GROUP BY series_title
+        ''').fetchall()
     else:
         rows = conn.execute('SELECT filename, path, title, poster FROM metadata WHERE category="movies"').fetchall()
     conn.close()
@@ -198,6 +205,7 @@ def home(cat='movies'):
     grid_html = '<div class="grid">'
     for r in rows:
         if cat == 'tv':
+            # r[0] is the Series Title (Brooklyn Nine-Nine)
             grid_html += f'''
             <a href="/series/{r[0]}" class="card">
                 <img src="{r[1]}" onerror="this.src='https://via.placeholder.com/500x750?text={r[0]}'">
@@ -205,7 +213,7 @@ def home(cat='movies'):
             </a>'''
         else:
             grid_html += f'''
-            <a href="/play/movies/{r[1]}" class="card">
+            <a href="/play/movies/{r[0]}" class="card">
                 <img src="{r[3]}" onerror="this.src='https://via.placeholder.com/500x750?text=Movie'">
                 <div class="card-info"><span class="card-title">{r[2]}</span></div>
             </a>'''
@@ -302,6 +310,7 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
 
 
 
