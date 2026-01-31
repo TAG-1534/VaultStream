@@ -26,6 +26,7 @@ def sync_worker(status_dict):
 
     for cat, base_path, root, f in all_files:
         fname_no_ext = os.path.splitext(f)[0]
+        # Calculate the path relative to the category root (e.g., /tv/)
         rel_path = os.path.relpath(os.path.join(root, f), base_path)
         path_parts = rel_path.split(os.sep)
 
@@ -58,36 +59,44 @@ def sync_worker(status_dict):
                     season_poster = main_poster
             except: pass
 
-        # --- TV LOGIC (Tiered Folder Logic) ---
+        # --- TV LOGIC (Refined Hierarchy) ---
         else:
-            series_folder = path_parts[0] if len(path_parts) > 1 else fname_no_ext
-            series_query = clean_filename(series_folder)
+            # The first folder inside your /tv/ directory is the Series Name
+            series_title_folder = path_parts[0] 
+            series_query = clean_filename(series_title_folder)
             
             try:
-                # 1. Search for the Series (Main Poster)
+                # 1. Search TMDB for the Series
                 s_search = requests.get(f"https://api.themoviedb.org/3/search/tv?query={series_query}", headers=headers).json()
+                
                 if s_search.get('results'):
                     s_res = s_search['results'][0]
                     tid = s_res['id']
-                    series_title = s_res.get('name')
+                    series_title = s_res.get('name') 
                     series_main_poster = f"https://image.tmdb.org/t/p/w500{s_res.get('poster_path')}"
                     
-                    # Identify Season/Episode from file
+                    # 2. Identify Season & Episode
                     s_idx, e_idx = extract_tv_info(f)
-                    if s_idx is not None: 
+                    
+                    # PRIORITY: Filename (S01E01) > Folder Name (Season 1)
+                    if s_idx is not None:
                         s_num = s_idx
                     else:
+                        # Look at the folder containing the file
                         parent_folder = path_parts[-2] if len(path_parts) > 1 else ""
                         s_match = re.search(r'(\d+)', parent_folder)
                         s_num = int(s_match.group(1)) if s_match else 1
+                        if "special" in parent_folder.lower(): s_num = 0
 
-                    # 2. Get Season Poster
-                    s_r = requests.get(f"https://api.themoviedb.org/3/tv/{tid}/season/{s_num}", headers=headers).json()
+                    # 3. Get Season Poster
+                    s_url = f"https://api.themoviedb.org/3/tv/{tid}/season/{s_num}"
+                    s_r = requests.get(s_url, headers=headers).json()
                     season_poster = f"https://image.tmdb.org/t/p/w500{s_r.get('poster_path')}" if s_r.get('poster_path') else series_main_poster
                     
-                    # 3. Get Episode Still
+                    # 4. Get Episode Detail
                     if s_idx is not None and e_idx is not None:
-                        ep_r = requests.get(f"https://api.themoviedb.org/3/tv/{tid}/season/{s_idx}/episode/{e_idx}", headers=headers).json()
+                        ep_url = f"https://api.themoviedb.org/3/tv/{tid}/season/{s_idx}/episode/{e_idx}"
+                        ep_r = requests.get(ep_url, headers=headers).json()
                         if 'id' in ep_r:
                             display_title = f"{series_title} - S{s_idx:02d}E{e_idx:02d} - {ep_r.get('name')}"
                             desc = ep_r.get('overview')
@@ -96,10 +105,15 @@ def sync_worker(status_dict):
                             display_title = f"{series_title} - S{s_idx:02d}E{e_idx:02d}"
                             main_poster = season_poster
                     else:
+                        display_title = f"{series_title} - {clean_filename(fname_no_ext)}"
                         main_poster = season_poster
-            except: pass
+                else:
+                    # Fallback if TMDB fails
+                    series_title = series_query
+            except Exception as e:
+                print(f"TV Sync Error for {series_query}: {e}")
 
-        # Final Fallback for images
+        # Final safety checks for image URLs
         if not main_poster: main_poster = f"https://via.placeholder.com/500x750?text={series_title}"
         if not series_main_poster: series_main_poster = main_poster
         if not season_poster: season_poster = main_poster
