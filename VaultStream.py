@@ -115,11 +115,25 @@ def series_view(series_name):
 @app.route('/series/<path:series_name>/season/<int:s_num>')
 def season_view(series_name, s_num):
     conn = get_db()
-    eps = conn.execute('SELECT filename, path, title, poster FROM metadata WHERE series_title = ? AND season = ?', (series_name, s_num)).fetchall()
+    # We now parse the Episode number out of the title or filename to sort correctly
+    # But for a quick fix, we'll sort by the display title descending
+    eps = conn.execute('''
+        SELECT filename, path, title, poster 
+        FROM metadata 
+        WHERE series_title = ? AND season = ? AND category = "tv"
+        ORDER BY title DESC
+    ''', (series_name, s_num)).fetchall()
     conn.close()
-    html = f'<a href="/series/{series_name}" class="back-btn">← Back</a><h1>{series_name} - Season {s_num}</h1><div class="grid tv-grid">'
+    
+    html = f'<a href="/series/{series_name}" class="back-btn">← Back to Seasons</a>'
+    html += f'<h1>{series_name} - Season {s_num}</h1>'
+    html += '<div class="grid tv-grid">'
     for e in eps:
-        html += f'<a href="/play/tv/{e[1]}" class="card tv-card"><img src="{e[3]}"><div class="card-info"><span class="card-title">{e[2]}</span></div></a>'
+        html += f'''
+        <a href="/play/tv/{e[1]}" class="card tv-card">
+            <img src="{e[3]}" onerror="this.src='https://via.placeholder.com/500x280?text=Episode'">
+            <div class="card-info"><span class="card-title">{e[2]}</span></div>
+        </a>'''
     return render_template_string(BASE_HTML, body_content=html + '</div>')
 
 @app.route('/api/count')
@@ -149,3 +163,4 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
