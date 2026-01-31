@@ -34,8 +34,15 @@ BASE_HTML = """
         #progress-container { position: fixed; top: 70px; left: 0; width: 100%; height: 4px; background: #222; display: none; z-index: 1001; }
         #progress-bar { height: 100%; width: 0%; background: var(--primary); transition: width 0.3s; }
         .container { padding: 100px 4% 40px 4%; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 25px; }
-        .tv-grid { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+        .grid { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); 
+            gap: 20px; 
+        }
+        /* This makes the episode list wider to fit the 16:9 stills */
+        .tv-grid { 
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); 
+        }
         .card { border-radius: 4px; overflow: hidden; transition: 0.3s; cursor: pointer; text-decoration: none; color: inherit; background: #141414; display: flex; flex-direction: column; border: 1px solid transparent;}
         .card:hover { transform: scale(1.05); border-color: #444; }
         .card img { width: 100%; aspect-ratio: 2/3; object-fit: cover; }
@@ -88,8 +95,10 @@ BASE_HTML = """
 def home(cat='movies'):
     conn = get_db()
     if cat == 'tv':
-        rows = conn.execute('SELECT series_title, MAX(poster) FROM metadata WHERE category="tv" GROUP BY series_title').fetchall()
+        # TIER 1: Show the Main Series Poster on the TV Home Page
+        rows = conn.execute('SELECT series_title, MAX(backdrop) FROM metadata WHERE category="tv" GROUP BY series_title').fetchall()
     else:
+        # MOVIES: Show the Movie Poster
         rows = conn.execute('SELECT filename, path, title, poster FROM metadata WHERE category="movies"').fetchall()
     conn.close()
 
@@ -102,37 +111,29 @@ def home(cat='movies'):
     return render_template_string(BASE_HTML, body_content=grid + '</div>')
 
 @app.route('/series/<path:series_name>')
+
 def series_view(series_name):
     conn = get_db()
+    # TIER 2: Show the specific Season Poster for each season
     seasons = conn.execute('SELECT season, MAX(season_poster) FROM metadata WHERE series_title = ? GROUP BY season ORDER BY season ASC', (series_name,)).fetchall()
     conn.close()
-    html = f'<a href="/category/tv" class="back-btn">← Back</a><h1>{series_name}</h1><div class="grid">'
+    html = f'<a href="/category/tv" class="back-btn">← Back to TV</a><h1>{series_name}</h1><div class="grid">'
     for s_num, s_poster in seasons:
         label = f"Season {s_num}" if s_num > 0 else "Specials"
         html += f'<a href="/series/{series_name}/season/{s_num}" class="card"><img src="{s_poster}"><div class="card-info"><span class="card-title">{label}</span></div></a>'
     return render_template_string(BASE_HTML, body_content=html + '</div>')
 
 @app.route('/series/<path:series_name>/season/<int:s_num>')
+
 def season_view(series_name, s_num):
     conn = get_db()
-    # Changed to ASC for chronological ordering (E01, E02, E03...)
-    eps = conn.execute('''
-        SELECT filename, path, title, poster 
-        FROM metadata 
-        WHERE series_title = ? AND season = ? AND category = "tv"
-        ORDER BY title ASC
-    ''', (series_name, s_num)).fetchall()
+    # TIER 3: Show the Episode Still (16:9) for each episode
+    eps = conn.execute('SELECT filename, path, title, poster FROM metadata WHERE series_title = ? AND season = ? ORDER BY title ASC', (series_name, s_num)).fetchall()
     conn.close()
-    
-    html = f'<a href="/series/{series_name}" class="back-btn">← Back to Seasons</a>'
-    html += f'<h1>{series_name} - Season {s_num}</h1>'
-    html += '<div class="grid tv-grid">'
+    html = f'<a href="/series/{series_name}" class="back-btn">← Back to Seasons</a><h1>{series_name} - Season {s_num}</h1><div class="grid tv-grid">'
     for e in eps:
-        html += f'''
-        <a href="/play/tv/{e[1]}" class="card tv-card">
-            <img src="{e[3]}" onerror="this.src='https://via.placeholder.com/500x280?text=Episode'">
-            <div class="card-info"><span class="card-title">{e[2]}</span></div>
-        </a>'''
+        # We use a special class 'tv-card' here for the 16:9 episode thumbnails
+        html += f'<a href="/play/tv/{e[1]}" class="card tv-card"><img src="{e[3]}" style="aspect-ratio: 16/9; object-fit: cover;"><div class="card-info"><span class="card-title">{e[2]}</span></div></a>'
     return render_template_string(BASE_HTML, body_content=html + '</div>')
 
 @app.route('/api/count')
@@ -162,5 +163,6 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
 
 
