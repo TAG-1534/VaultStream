@@ -29,59 +29,46 @@ def sync_worker(status_dict):
         rel_path = os.path.relpath(os.path.join(root, f), base_path)
         path_parts = rel_path.split(os.sep)
 
-        # Identify Show/Movie Folder
+        # 1. Identify Target Folder (The Movie Name or Show Name)
         series_folder = path_parts[0] if len(path_parts) > 1 else fname_no_ext
+        search_year = extract_year(series_folder)
+        search_query = clean_filename(series_folder)
         
-        # Identify Season
+        # Default Fallbacks
+        display_title = clean_filename(fname_no_ext)
+        series_title = search_query
+        main_poster = f"https://via.placeholder.com/500x750?text={series_title}"
+        season_poster = main_poster
         s_num = 1
+        desc = ""
+
+        # Identify Season Number from folder structure
         if len(path_parts) > 2:
             s_match = re.search(r'(\d+)', path_parts[1])
             s_num = int(s_match.group(1)) if s_match else 1
             if "special" in path_parts[1].lower(): s_num = 0
 
-        # --- REFINED SEARCH LOGIC ---
-        # 1. Try to find a year in the folder name (e.g., "Deadpool (2016)")
-        year_match = re.search(r'\b(19|20)\d{2}\b', series_folder)
-        search_year = year_match.group(0) if year_match else None
-        
-        # 2. Clean the folder name for searching
-        search_query = clean_filename(series_folder)
-        
-        display_title = clean_filename(fname_no_ext)
-        series_title = search_query
-        main_poster = f"https://via.placeholder.com/500x750?text={series_title}"
-        season_poster = main_poster
-        desc = ""
-
-       # Identify Year and Clean Name
-        search_year = extract_year(series_folder)
-        search_query = clean_filename(series_folder)
-        
         try:
-            if cat == "movie":
-                url = f"https://api.themoviedb.org/3/search/movie?query={search_query}"
-                if search_year:
-                    url += f"&primary_release_year={search_year}"
-            else: # TV
-                url = f"https://api.themoviedb.org/3/search/tv?query={search_query}"
-                if search_year:
-                    url += f"&first_air_date_year={search_year}"
-
+            # 2. Search TMDB
+            stype = "movie" if cat == "movies" else "tv"
+            url = f"https://api.themoviedb.org/3/search/{stype}?query={search_query}"
+            if search_year:
+                url += f"&year={search_year}" if cat == "movies" else f"&first_air_date_year={search_year}"
+            
             r = requests.get(url, headers=headers).json()
             
             if r.get('results'):
-                # Sort results by popularity to avoid obscure matches
-                results = sorted(r['results'], key=lambda x: x.get('popularity', 0), reverse=True)
-                res = results[0]
-                # ... (rest of your metadata assignment logic)
-                # We take the first result, which is much more likely to be correct now
                 res = r['results'][0]
                 tid = res['id']
                 series_title = res.get('name') or res.get('title')
-                main_poster = f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}"
                 
+                # Base Poster
+                if res.get('poster_path'):
+                    main_poster = f"https://image.tmdb.org/t/p/w500{res.get('poster_path')}"
+                    season_poster = main_poster # Fallback for seasons
+
                 if cat == "tv":
-                    # Get Season Poster
+                    # Get Season specific poster
                     s_r = requests.get(f"https://api.themoviedb.org/3/tv/{tid}/season/{s_num}", headers=headers).json()
                     if s_r.get('poster_path'):
                         season_poster = f"https://image.tmdb.org/t/p/w500{s_r.get('poster_path')}"
@@ -93,6 +80,7 @@ def sync_worker(status_dict):
                         if 'id' in ep_r:
                             display_title = f"{series_title} - S{s_idx:02d}E{e_idx:02d} - {ep_r.get('name')}"
                             desc = ep_r.get('overview')
+                            # If episode has a 'still', use it. Otherwise use season poster.
                             if ep_r.get('still_path'):
                                 main_poster = f"https://image.tmdb.org/t/p/w500{ep_r.get('still_path')}"
                             else:
@@ -101,7 +89,7 @@ def sync_worker(status_dict):
                             display_title = f"{series_title} - S{s_idx:02d}E{e_idx:02d}"
                             main_poster = season_poster
         except Exception as e:
-            print(f"Error syncing {f}: {e}")
+            print(f"Sync error for {f}: {e}")
 
         conn.execute('INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', 
                     (fname_no_ext, cat, rel_path, display_title, main_poster, "", desc, series_title, s_num, season_poster))
