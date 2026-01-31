@@ -8,11 +8,43 @@ from helpers import clean_filename, extract_tv_info, extract_year
 def get_db():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
+def init_db():
+    """Helper to create the table structure after deletion"""
+    conn = get_db()
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS metadata (
+            filename TEXT PRIMARY KEY,
+            category TEXT,
+            path TEXT,
+            title TEXT,
+            poster TEXT,
+            backdrop TEXT,
+            description TEXT,
+            series_title TEXT,
+            season INTEGER,
+            season_poster TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
 def sync_worker(status_dict):
+    # --- NEW: DELETE OLD DATABASE ---
+    if os.path.exists(DB_PATH):
+        try:
+            os.remove(DB_PATH)
+            print(">>> Database deleted for fresh sync.")
+        except Exception as e:
+            print(f">>> Could not delete database: {e}")
+    
+    # Re-initialize the table structure
+    init_db()
+    
     status_dict["active"] = True
     status_dict["current"] = 0
     all_files = []
     
+    # (Rest of your file scanning logic)
     for cat, base_path in PATHS.items():
         if os.path.exists(base_path):
             for root, _, files in os.walk(base_path):
@@ -25,6 +57,7 @@ def sync_worker(status_dict):
     conn = get_db()
 
     for cat, base_path, root, f in all_files:
+       for cat, base_path, root, f in all_files:
         fname_no_ext = os.path.splitext(f)[0]
         # Calculate the path relative to the category root (e.g., /tv/)
         rel_path = os.path.relpath(os.path.join(root, f), base_path)
@@ -117,6 +150,6 @@ def sync_worker(status_dict):
                     (fname_no_ext, cat, rel_path, display_title, main_poster, series_main_poster, desc, series_title, s_num, season_poster))
         conn.commit()
         status_dict["current"] += 1
-    
+        
     conn.close()
     status_dict["active"] = False
