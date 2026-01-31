@@ -59,14 +59,12 @@ def sync_worker(status_dict):
                     season_poster = main_poster
             except: pass
 
-        # --- TV LOGIC (Refined Hierarchy) ---
+        # --- TV LOGIC ---
         else:
-            # The first folder inside your /tv/ directory is the Series Name
             series_title_folder = path_parts[0] 
             series_query = clean_filename(series_title_folder)
             
             try:
-                # 1. Search TMDB for the Series
                 s_search = requests.get(f"https://api.themoviedb.org/3/search/tv?query={series_query}", headers=headers).json()
                 
                 if s_search.get('results'):
@@ -75,28 +73,27 @@ def sync_worker(status_dict):
                     series_title = s_res.get('name') 
                     series_main_poster = f"https://image.tmdb.org/t/p/w500{s_res.get('poster_path')}"
                     
-                    # 2. Identify Season & Episode
+                    # 1. Capture S/E from that specific filename example
                     s_idx, e_idx = extract_tv_info(f)
                     
-                    # PRIORITY: Filename (S01E01) > Folder Name (Season 1)
+                    # 2. Logic: If filename has S03, s_num is 3. 
+                    # If not, check folder. If not, default to 1.
                     if s_idx is not None:
                         s_num = s_idx
                     else:
-                        # Look at the folder containing the file
                         parent_folder = path_parts[-2] if len(path_parts) > 1 else ""
-                        s_match = re.search(r'(\d+)', parent_folder)
-                        s_num = int(s_match.group(1)) if s_match else 1
-                        if "special" in parent_folder.lower(): s_num = 0
+                        folder_match = re.search(r'Season\s*(\d+)', parent_folder, re.I)
+                        s_num = int(folder_match.group(1)) if folder_match else 1
 
-                    # 3. Get Season Poster
-                    s_url = f"https://api.themoviedb.org/3/tv/{tid}/season/{s_num}"
-                    s_r = requests.get(s_url, headers=headers).json()
+                    # WATCH YOUR TERMINAL: It should now say "Detected Season: 3"
+                    print(f">>> {series_title} | S{s_num} | E{e_idx} | File: {f}")
+
+                    # 3. Fetch Tier 2 & 3 Metadata
+                    s_r = requests.get(f"https://api.themoviedb.org/3/tv/{tid}/season/{s_num}", headers=headers).json()
                     season_poster = f"https://image.tmdb.org/t/p/w500{s_r.get('poster_path')}" if s_r.get('poster_path') else series_main_poster
                     
-                    # 4. Get Episode Detail
                     if s_idx is not None and e_idx is not None:
-                        ep_url = f"https://api.themoviedb.org/3/tv/{tid}/season/{s_idx}/episode/{e_idx}"
-                        ep_r = requests.get(ep_url, headers=headers).json()
+                        ep_r = requests.get(f"https://api.themoviedb.org/3/tv/{tid}/season/{s_idx}/episode/{e_idx}", headers=headers).json()
                         if 'id' in ep_r:
                             display_title = f"{series_title} - S{s_idx:02d}E{e_idx:02d} - {ep_r.get('name')}"
                             desc = ep_r.get('overview')
@@ -105,13 +102,11 @@ def sync_worker(status_dict):
                             display_title = f"{series_title} - S{s_idx:02d}E{e_idx:02d}"
                             main_poster = season_poster
                     else:
-                        display_title = f"{series_title} - {clean_filename(fname_no_ext)}"
                         main_poster = season_poster
                 else:
-                    # Fallback if TMDB fails
                     series_title = series_query
             except Exception as e:
-                print(f"TV Sync Error for {series_query}: {e}")
+                print(f"TV Sync Error: {e}")
 
         # Final safety checks for image URLs
         if not main_poster: main_poster = f"https://via.placeholder.com/500x750?text={series_title}"
