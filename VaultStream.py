@@ -111,29 +111,54 @@ def home(cat='movies'):
     return render_template_string(BASE_HTML, body_content=grid + '</div>')
 
 @app.route('/series/<path:series_name>')
-
 def series_view(series_name):
     conn = get_db()
-    # TIER 2: Show the specific Season Poster for each season
-    seasons = conn.execute('SELECT season, MAX(season_poster) FROM metadata WHERE series_title = ? GROUP BY season ORDER BY season ASC', (series_name,)).fetchall()
+    # Ensure we get every unique season number for this specific series
+    seasons = conn.execute('''
+        SELECT season, MAX(season_poster) 
+        FROM metadata 
+        WHERE series_title = ? AND category = "tv"
+        GROUP BY season 
+        ORDER BY season ASC
+    ''', (series_name,)).fetchall()
     conn.close()
-    html = f'<a href="/category/tv" class="back-btn">← Back to TV</a><h1>{series_name}</h1><div class="grid">'
+    
+    html = f'<a href="/category/tv" class="back-btn">← Back to TV</a>'
+    html += f'<h1>{series_name}</h1>'
+    html += '<div class="grid">'
+    
     for s_num, s_poster in seasons:
+        # If season is 0, label it Specials, otherwise Season X
         label = f"Season {s_num}" if s_num > 0 else "Specials"
-        html += f'<a href="/series/{series_name}/season/{s_num}" class="card"><img src="{s_poster}"><div class="card-info"><span class="card-title">{label}</span></div></a>'
+        # Make sure the link passes the exact s_num
+        html += f'''
+        <a href="/series/{series_name}/season/{s_num}" class="card">
+            <img src="{s_poster}">
+            <div class="card-info"><span class="card-title">{label}</span></div>
+        </a>'''
     return render_template_string(BASE_HTML, body_content=html + '</div>')
 
 @app.route('/series/<path:series_name>/season/<int:s_num>')
-
 def season_view(series_name, s_num):
     conn = get_db()
-    # TIER 3: Show the Episode Still (16:9) for each episode
-    eps = conn.execute('SELECT filename, path, title, poster FROM metadata WHERE series_title = ? AND season = ? ORDER BY title ASC', (series_name, s_num)).fetchall()
+    # Strictly filter by BOTH series_title and season number
+    eps = conn.execute('''
+        SELECT filename, path, title, poster 
+        FROM metadata 
+        WHERE series_title = ? AND season = ? AND category = "tv"
+        ORDER BY title ASC
+    ''', (series_name, s_num)).fetchall()
     conn.close()
-    html = f'<a href="/series/{series_name}" class="back-btn">← Back to Seasons</a><h1>{series_name} - Season {s_num}</h1><div class="grid tv-grid">'
+    
+    html = f'<a href="/series/{series_name}" class="back-btn">← Back to Seasons</a>'
+    html += f'<h1>{series_name} - Season {s_num}</h1>'
+    html += '<div class="grid tv-grid">'
     for e in eps:
-        # We use a special class 'tv-card' here for the 16:9 episode thumbnails
-        html += f'<a href="/play/tv/{e[1]}" class="card tv-card"><img src="{e[3]}" style="aspect-ratio: 16/9; object-fit: cover;"><div class="card-info"><span class="card-title">{e[2]}</span></div></a>'
+        html += f'''
+        <a href="/play/tv/{e[1]}" class="card tv-card">
+            <img src="{e[3]}" style="aspect-ratio: 16/9; object-fit: cover;">
+            <div class="card-info"><span class="card-title">{e[2]}</span></div>
+        </a>'''
     return render_template_string(BASE_HTML, body_content=html + '</div>')
 
 @app.route('/api/count')
@@ -163,6 +188,7 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
 
 
 
