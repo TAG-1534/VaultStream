@@ -39,14 +39,19 @@ def sync_worker(status_dict):
         series_title = search_query
         main_poster = f"https://via.placeholder.com/500x750?text={series_title}"
         season_poster = main_poster
-        s_num = 1
         desc = ""
-
-        # Identify Season Number from folder structure
-        if len(path_parts) > 2:
-            s_match = re.search(r'(\d+)', path_parts[1])
-            s_num = int(s_match.group(1)) if s_match else 1
-            if "special" in path_parts[1].lower(): s_num = 0
+        # Identify Season Number strictly
+        s_num = 1
+        if len(path_parts) > 1:
+            # Look at the folder immediately containing the file
+            parent_folder = path_parts[-2] if len(path_parts) > 1 else ""
+            s_match = re.search(r'(\d+)', parent_folder)
+            
+            if s_match:
+                s_num = int(s_match.group(1))
+            
+            if "special" in parent_folder.lower():
+                s_num = 0
 
         try:
             # 2. Search TMDB
