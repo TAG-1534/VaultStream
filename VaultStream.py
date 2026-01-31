@@ -115,13 +115,12 @@ def series_view(series_name):
 @app.route('/series/<path:series_name>/season/<int:s_num>')
 def season_view(series_name, s_num):
     conn = get_db()
-    # We now parse the Episode number out of the title or filename to sort correctly
-    # But for a quick fix, we'll sort by the display title descending
+    # Changed to ASC for chronological ordering (E01, E02, E03...)
     eps = conn.execute('''
         SELECT filename, path, title, poster 
         FROM metadata 
         WHERE series_title = ? AND season = ? AND category = "tv"
-        ORDER BY title DESC
+        ORDER BY title ASC
     ''', (series_name, s_num)).fetchall()
     conn.close()
     
@@ -163,4 +162,5 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
 
