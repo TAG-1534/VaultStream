@@ -3,7 +3,7 @@ import requests
 import sqlite3
 import re
 from config import TMDB_API_KEY, DB_PATH, PATHS
-from helpers import clean_filename, extract_tv_info
+from helpers import clean_filename, extract_tv_info, extract_year
 
 def get_db():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
