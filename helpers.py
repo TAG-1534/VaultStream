@@ -21,16 +21,14 @@ def clean_filename(name):
     return re.sub(r'\s+', ' ', name).strip().title()
 
 def extract_tv_info(filename):
-    standard = re.search(r'[sS](\d+)[eE](\d+)', filename)
-    if standard:
-        return int(standard.group(1)), int(standard.group(2))
+    # Case-insensitive search for S00E00 pattern
+    match = re.search(r'[Ss](\d{1,2})[Ee](\d{1,2})', filename, re.I)
+    if match:
+        return int(match.group(1)), int(match.group(2))
     
-    date_match = re.search(r'(\d{4}[.\-\s]\d{2}[.\-\s]\d{2})|(\d{2}[.\-\s]\d{2}[.\-\s]\d{4})', filename)
-    if date_match:
-        return None, date_match.group(0) 
-    
-    multi = re.search(r'[sS](\d+)[eE](\d+)-[eE](\d+)', filename)
-    if multi:
-        return int(multi.group(1)), int(multi.group(2))
-    
+    # Fallback for 1x01 pattern
+    match = re.search(r'(\d{1,2})x(\d{1,2})', filename)
+    if match:
+        return int(match.group(1)), int(match.group(2))
+        
     return None, None
