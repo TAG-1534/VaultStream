@@ -114,13 +114,7 @@ def home(cat='movies'):
 def series_view(series_name):
     conn = get_db()
     # Ensure we get every unique season number for this specific series
-    seasons = conn.execute('''
-        SELECT season, MAX(season_poster) 
-        FROM metadata 
-        WHERE series_title = ? AND category = "tv"
-        GROUP BY season 
-        ORDER BY season ASC
-    ''', (series_name,)).fetchall()
+    seasons = conn.execute('SELECT season, MAX(season_poster) FROM metadata WHERE series_title = ? GROUP BY season ORDER BY season ASC', (series_name,)).fetchall()
     conn.close()
     
     html = f'<a href="/category/tv" class="back-btn">← Back to TV</a>'
@@ -188,6 +182,7 @@ def stream(cat, filename):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
 
 
 
